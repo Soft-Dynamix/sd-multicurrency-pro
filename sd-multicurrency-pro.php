@@ -3,7 +3,7 @@
  * Plugin Name: SD MultiCurrency Pro
  * Plugin URI: https://softdynamix.co.za/plugins/sd-multicurrency-pro
  * Description: Multi-currency pricing for WooCommerce + Tutor LMS. Display prices in multiple currencies while charging in ZAR. Perfect for South African businesses using Yoco.
- * Version: 1.0.0
+ * Version: 1.0.1
  * Author: Soft Dynamix
  * Author URI: https://softdynamix.co.za
  * License: GPL-2.0+
@@ -22,7 +22,7 @@ if (!defined('ABSPATH')) {
 }
 
 // Plugin Constants
-define('SDMC_VERSION', '1.0.0');
+define('SDMC_VERSION', '1.0.1');
 define('SDMC_PATH', plugin_dir_path(__FILE__));
 define('SDMC_URL', plugin_dir_url(__FILE__));
 define('SDMC_BASENAME', plugin_basename(__FILE__));
@@ -33,8 +33,12 @@ define('SDMC_PLUGIN_NAME', 'SD MultiCurrency Pro');
  */
 add_action('before_woocommerce_init', function() {
     if (class_exists('\Automattic\WooCommerce\Utilities\FeaturesUtil')) {
-        \Automattic\WooCommerce\Utilities\FeaturesUtil::declare_compatibility('custom_order_tables', __FILE__);
-        \Automattic\WooCommerce\Utilities\FeaturesUtil::declare_compatibility('cart_checkout_blocks', __FILE__);
+        try {
+            \Automattic\WooCommerce\Utilities\FeaturesUtil::declare_compatibility('custom_order_tables', __FILE__, true);
+            \Automattic\WooCommerce\Utilities\FeaturesUtil::declare_compatibility('cart_checkout_blocks', __FILE__, true);
+        } catch (Exception $e) {
+            // Silently fail if compatibility declaration doesn't work
+        }
     }
 });
 
@@ -150,10 +154,13 @@ function sdmc_activate() {
     add_option('sdmc_run_wizard', true);
     
     // Create license option with pre-activated license
+    // Use gmdate() to avoid timezone warnings
+    $expiry_date = gmdate('Y-m-d', strtotime('+1 year'));
+    
     add_option('sdmc_license', [
         'key' => 'SD-MCP-AE5481FD-622BBD0F-E25E1993',
         'status' => 'active',
-        'expires' => date('Y-m-d', strtotime('+1 year')),
+        'expires' => $expiry_date,
         'site' => home_url(),
         'activated_at' => current_time('mysql'),
         'error' => ''
@@ -168,6 +175,9 @@ function sdmc_activate() {
  */
 register_deactivation_hook(__FILE__, 'sdmc_deactivate');
 function sdmc_deactivate() {
+    // Clear scheduled events
+    wp_clear_scheduled_hook('sdmc_daily_license_check');
+    
     flush_rewrite_rules();
 }
 

@@ -29,7 +29,7 @@ class SDMC_License {
     /**
      * Pre-activated license keys (for development/distribution)
      */
-    const VALID_KEYS = [
+    private static $valid_keys = [
         'SD-MCP-AE5481FD-622BBD0F-E25E1993'
     ];
     
@@ -148,11 +148,12 @@ class SDMC_License {
         $site_url = home_url();
 
         // Check against pre-activated keys (offline validation)
-        if (in_array($key, self::VALID_KEYS)) {
+        if (in_array($key, self::$valid_keys)) {
+            $expiry_date = gmdate('Y-m-d', strtotime('+1 year'));
             update_option(self::OPTION_NAME, [
                 'key' => $key,
                 'status' => 'active',
-                'expires' => date('Y-m-d', strtotime('+1 year')),
+                'expires' => $expiry_date,
                 'site' => $site_url,
                 'activated_at' => current_time('mysql'),
                 'error' => ''
@@ -161,7 +162,7 @@ class SDMC_License {
             return [
                 'success' => true,
                 'message' => 'License activated successfully!',
-                'expires' => date('Y-m-d', strtotime('+1 year'))
+                'expires' => $expiry_date
             ];
         }
 
@@ -267,10 +268,10 @@ class SDMC_License {
         }
 
         // Check against pre-activated keys (offline validation)
-        if (in_array($license['key'], self::VALID_KEYS)) {
+        if (in_array($license['key'], self::$valid_keys)) {
             return [
                 'valid' => true,
-                'expires' => $license['expires'] ?? date('Y-m-d', strtotime('+1 year'))
+                'expires' => $license['expires'] ?? gmdate('Y-m-d', strtotime('+1 year'))
             ];
         }
 
