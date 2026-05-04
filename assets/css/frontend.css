@@ -1,0 +1,252 @@
+/**
+ * SD MultiCurrency Pro - Frontend Styles
+ */
+
+/* Currency Switcher */
+.sdmc-switcher {
+    display: inline-block;
+    position: relative;
+}
+
+/* Dropdown Style */
+.sdmc-select {
+    appearance: none;
+    -webkit-appearance: none;
+    background: #fff url('data:image/svg+xml;utf8,<svg xmlns="http://www.w3.org/2000/svg" width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="%236b7280" stroke-width="2"><polyline points="6,9 12,15 18,9"></polyline></svg>') no-repeat right 10px center;
+    border: 1px solid #e5e7eb;
+    padding: 10px 35px 10px 15px;
+    border-radius: 8px;
+    font-size: 14px;
+    cursor: pointer;
+    transition: all 0.2s;
+    min-width: 120px;
+}
+
+.sdmc-select:hover {
+    border-color: #2563EB;
+}
+
+.sdmc-select:focus {
+    outline: none;
+    border-color: #2563EB;
+    box-shadow: 0 0 0 3px rgba(37, 99, 235, 0.1);
+}
+
+/* Buttons Style */
+.sdmc-buttons {
+    display: flex;
+    gap: 8px;
+    flex-wrap: wrap;
+}
+
+.sdmc-btn {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    padding: 8px 12px;
+    background: #f9fafb;
+    border: 1px solid #e5e7eb;
+    border-radius: 8px;
+    cursor: pointer;
+    transition: all 0.2s;
+    font-size: 14px;
+    font-family: inherit;
+}
+
+.sdmc-btn:hover {
+    background: #EFF6FF;
+    border-color: #2563EB;
+}
+
+.sdmc-btn-active {
+    background: #2563EB;
+    border-color: #2563EB;
+    color: #fff;
+}
+
+.sdmc-btn-active .sdmc-symbol {
+    color: #fff;
+}
+
+.sdmc-flag {
+    font-size: 18px;
+}
+
+.sdmc-symbol {
+    color: #6b7280;
+    font-weight: 500;
+}
+
+/* Flags Style */
+.sdmc-flags {
+    display: flex;
+    gap: 5px;
+    flex-wrap: wrap;
+}
+
+.sdmc-flag-btn {
+    padding: 8px;
+    background: #f9fafb;
+    border: 2px solid transparent;
+    border-radius: 8px;
+    cursor: pointer;
+    font-size: 24px;
+    transition: all 0.2s;
+    line-height: 1;
+}
+
+.sdmc-flag-btn:hover {
+    background: #EFF6FF;
+    transform: scale(1.1);
+}
+
+.sdmc-flag-active {
+    border-color: #2563EB;
+    background: #EFF6FF;
+}
+
+/* Price Display */
+.sdmc-price {
+    display: inline-block;
+}
+
+.sdmc-price strong {
+    font-size: 1.2em;
+    color: #0F172A;
+}
+
+/* Checkout Notice */
+.sdmc-checkout-notice {
+    display: block;
+    margin-top: 5px;
+    font-size: 0.85em;
+    color: #6b7280;
+    line-height: 1.4;
+}
+
+/* Cart/Checkout Notices */
+.sdmc-checkout-notice.woocommerce-info,
+.sdmc-cart-notice.woocommerce-info {
+    background: #FEF3C7;
+    border-left-color: #F59E0B;
+}
+
+/* Course Price (Tutor LMS) */
+.sdmc-course-price {
+    display: inline-block;
+}
+
+.sdmc-course-price .tutor-price {
+    font-size: 1.5em;
+    font-weight: 600;
+}
+
+/* Currency Lock Notice */
+.sdmc-switcher-locked {
+    padding: 10px 15px;
+    background: #f3f4f6;
+    border-radius: 8px;
+    font-size: 12px;
+    color: #6b7280;
+}
+
+/* Auto Switcher (Fixed Position) */
+.sdmc-auto-switcher {
+    position: fixed;
+    top: 10px;
+    right: 10px;
+    z-index: 9999;
+    background: #fff;
+    padding: 8px 12px;
+    border-radius: 8px;
+    box-shadow: 0 2px 10px rgba(0,0,0,0.1);
+}
+
+.sdmc-auto-switcher select {
+    border: 1px solid #e5e7eb;
+    padding: 6px 10px;
+    border-radius: 6px;
+    font-size: 14px;
+    cursor: pointer;
+}
+
+.sdmc-auto-switcher select:focus {
+    outline: none;
+    border-color: #2563EB;
+}
+
+/* Enroll Button Notice */
+.sdmc-enroll-notice {
+    font-size: 12px;
+    color: #6b7280;
+    margin-top: 5px;
+}
+
+/* Currency Notice (Tutor) */
+.sdmc-currency-notice {
+    padding: 10px;
+    background: #FEF3C7;
+    border-radius: 8px;
+    margin-bottom: 15px;
+    font-size: 13px;
+}
+
+/* Order Currency Info */
+.sdmc-order-currency-info {
+    background: #DCFCE7;
+    padding: 15px 20px;
+    border-radius: 8px;
+    margin-bottom: 20px;
+    color: #16A34A;
+}
+
+/* Loading State */
+.sdmc-loading {
+    display: inline-block;
+    width: 20px;
+    height: 20px;
+    border: 2px solid #e5e7eb;
+    border-top-color: #2563EB;
+    border-radius: 50%;
+    animation: sdmc-spin 0.8s linear infinite;
+}
+
+@keyframes sdmc-spin {
+    to {
+        transform: rotate(360deg);
+    }
+}
+
+/* Responsive */
+@media screen and (max-width: 768px) {
+    .sdmc-auto-switcher {
+        top: auto;
+        bottom: 10px;
+        right: 10px;
+    }
+    
+    .sdmc-buttons {
+        flex-direction: column;
+    }
+    
+    .sdmc-btn {
+        justify-content: center;
+    }
+}
+
+/* Body Classes */
+body.sdmc-currency-usd .price .amount::before {
+    content: '$';
+}
+
+body.sdmc-currency-gbp .price .amount::before {
+    content: '£';
+}
+
+body.sdmc-currency-eur .price .amount::before {
+    content: '€';
+}
+
+body.sdmc-currency-zar .price .amount::before {
+    content: 'R';
+}
