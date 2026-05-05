@@ -3,7 +3,7 @@
  * Plugin Name: SD MultiCurrency Pro
  * Plugin URI: https://softdynamix.co.za/plugins/sd-multicurrency-pro
  * Description: Multi-currency pricing for WooCommerce + Tutor LMS. Display prices in multiple currencies while charging in ZAR. Perfect for South African businesses using Yoco.
- * Version: 1.0.3
+ * Version: 1.0.4
  * Author: Soft Dynamix
  * Author URI: https://softdynamix.co.za
  * License: GPL-2.0+
@@ -22,7 +22,7 @@ if (!defined('ABSPATH')) {
 }
 
 // Plugin Constants
-define('SDMC_VERSION', '1.0.3');
+define('SDMC_VERSION', '1.0.4');
 define('SDMC_PATH', plugin_dir_path(__FILE__));
 define('SDMC_URL', plugin_dir_url(__FILE__));
 define('SDMC_BASENAME', plugin_basename(__FILE__));
@@ -76,11 +76,9 @@ function sdmc_include_files() {
         require_once SDMC_PATH . 'includes/admin/class-onboarding.php';
     }
     
-    // Frontend
-    if (!is_admin()) {
-        require_once SDMC_PATH . 'includes/frontend/class-switcher.php';
-        require_once SDMC_PATH . 'includes/frontend/class-display.php';
-    }
+    // Frontend - always load for shortcode support in widgets/customizer
+    require_once SDMC_PATH . 'includes/frontend/class-switcher.php';
+    require_once SDMC_PATH . 'includes/frontend/class-display.php';
 }
 
 // Include files early
@@ -119,11 +117,9 @@ function sdmc_init() {
         SDMC_Admin_Onboarding::get_instance();
     }
     
-    // Initialize Frontend
-    if (!is_admin()) {
-        SDMC_Frontend_Switcher::get_instance();
-        SDMC_Frontend_Display::get_instance();
-    }
+    // Initialize Frontend (always initialize for shortcode support)
+    SDMC_Frontend_Switcher::get_instance();
+    SDMC_Frontend_Display::get_instance();
     
     // Initialize License System
     SDMC_License::get_instance();

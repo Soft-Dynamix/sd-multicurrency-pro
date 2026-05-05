@@ -30,8 +30,9 @@ class SDMC_Frontend_Switcher {
      * Constructor
      */
     public function __construct() {
-        // Register shortcode
+        // Register shortcodes (both variants for compatibility)
         add_shortcode('sd_currency_switcher', [$this, 'render_switcher']);
+        add_shortcode('sdmc_currency_switcher', [$this, 'render_switcher']);
     }
     
     /**
