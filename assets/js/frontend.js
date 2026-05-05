@@ -15,19 +15,21 @@
      */
     function initSwitcher() {
         // Dropdown change
-        $('#sdmc-switch').on('change', function() {
+        $(document).on('change', '.sdmc-currency-select', function() {
             var currency = $(this).val();
             setCurrency(currency);
         });
         
         // Button click
-        $('.sdmc-btn').on('click', function() {
+        $(document).on('click', '.sdmc-currency-btn', function(e) {
+            e.preventDefault();
             var currency = $(this).data('currency');
             setCurrency(currency);
         });
         
         // Flag click
-        $('.sdmc-flag-btn').on('click', function() {
+        $(document).on('click', '.sdmc-currency-flag', function(e) {
+            e.preventDefault();
             var currency = $(this).data('currency');
             setCurrency(currency);
         });
@@ -37,26 +39,20 @@
      * Set currency via AJAX
      */
     function setCurrency(currency) {
-        // Check if cart has items (optional lock)
-        // Uncomment below to prevent switching with cart items
-        /*
-        if (typeof wc_cart_fragments_params !== 'undefined') {
-            if ($('.woocommerce-cart-form').length) {
-                alert('Cannot change currency while items are in cart');
-                return;
-            }
+        if (!currency) {
+            console.error('No currency provided');
+            return;
         }
-        */
         
         // Show loading state
-        $('.sdmc-btn, .sdmc-flag-btn').prop('disabled', true);
-        $('#sdmc-switch').prop('disabled', true);
+        $('.sdmc-currency-btn, .sdmc-currency-flag').prop('disabled', true);
+        $('.sdmc-currency-select').prop('disabled', true);
         
         $.ajax({
             url: sdmc_ajax.ajax_url,
             type: 'POST',
             data: {
-                action: 'sdmc_set_currency',
+                action: 'sdmc_switch_currency',
                 nonce: sdmc_ajax.nonce,
                 currency: currency
             },
@@ -69,14 +65,16 @@
                     location.reload();
                 } else {
                     console.error('Failed to set currency:', response.data);
+                    alert('Failed to switch currency. Please try again.');
                 }
             },
             error: function(xhr, status, error) {
                 console.error('AJAX error:', error);
+                alert('Connection error. Please try again.');
             },
             complete: function() {
-                $('.sdmc-btn, .sdmc-flag-btn').prop('disabled', false);
-                $('#sdmc-switch').prop('disabled', false);
+                $('.sdmc-currency-btn, .sdmc-currency-flag').prop('disabled', false);
+                $('.sdmc-currency-select').prop('disabled', false);
             }
         });
     }
@@ -86,18 +84,18 @@
      */
     function updateSwitcherUI(currency) {
         // Update dropdown
-        $('#sdmc-switch').val(currency);
+        $('.sdmc-currency-select').val(currency);
         
         // Update buttons
-        $('.sdmc-btn').removeClass('sdmc-btn-active');
-        $('.sdmc-btn[data-currency="' + currency + '"]').addClass('sdmc-btn-active');
+        $('.sdmc-currency-btn').removeClass('sdmc-active');
+        $('.sdmc-currency-btn[data-currency="' + currency + '"]').addClass('sdmc-active');
         
         // Update flags
-        $('.sdmc-flag-btn').removeClass('sdmc-flag-active');
-        $('.sdmc-flag-btn[data-currency="' + currency + '"]').addClass('sdmc-flag-active');
+        $('.sdmc-currency-flag').removeClass('sdmc-active');
+        $('.sdmc-currency-flag[data-currency="' + currency + '"]').addClass('sdmc-active');
         
         // Update body class
-        $('body').removeClass('sdmc-currency-usd sdmc-currency-gbp sdmc-currency-eur sdmc-currency-zar');
+        $('body').removeClass('sdmc-currency-usd sdmc-currency-gbp sdmc-currency-eur sdmc-currency-zar sdmc-currency-aud sdmc-currency-cad sdmc-currency-nzd');
         $('body').addClass('sdmc-currency-' + currency.toLowerCase());
     }
     
@@ -109,7 +107,10 @@
             'ZAR': 'R',
             'USD': '$',
             'GBP': '£',
-            'EUR': '€'
+            'EUR': '€',
+            'AUD': 'A$',
+            'CAD': 'C$',
+            'NZD': 'NZ$'
         };
         
         var symbol = symbols[currency] || currency;
@@ -117,6 +118,11 @@
         
         return symbol + formatted;
     }
+    
+    // Global function for inline onchange handlers
+    window.sdmcSwitchCurrency = function(currency) {
+        setCurrency(currency);
+    };
     
     // Expose to global
     window.SDMC_Frontend = {

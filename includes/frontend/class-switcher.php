@@ -72,7 +72,7 @@ class SDMC_Frontend_Switcher {
      * Render dropdown style
      */
     private function render_dropdown($current, $currencies) {
-        echo '<select class="sdmc-currency-select" onchange="sdmcSwitchCurrency(this.value)">';
+        echo '<select class="sdmc-currency-select">';
         
         foreach ($currencies as $currency) {
             $symbol = SDMC_Currency::get_symbol($currency);
