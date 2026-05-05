@@ -68,20 +68,32 @@ class SDMC_Integrations_Tutor {
      * Initialize hooks
      */
     private function init_hooks() {
-        // Course price filter
-        add_filter('tutor_course_price', [$this, 'course_price'], 10, 2);
+        // Multiple hooks for Tutor LMS price display
+        add_filter('tutor_course_price', [$this, 'course_price'], 999, 2);
+        add_filter('get_tutor_course_price', [$this, 'course_price'], 999, 2);
+        add_filter('tutor/course/price', [$this, 'course_price'], 999, 2);
+        
+        // Hook into tutor price HTML output
+        add_action('tutor_course/single/price_content_before', [$this, 'start_price_capture'], 1);
+        add_action('tutor_course/single/price_content_after', [$this, 'end_price_capture'], 999);
+        
+        // Filter the course price meta
+        add_filter('get_post_metadata', [$this, 'filter_course_price_meta'], 999, 4);
         
         // Add meta box for course pricing
         add_action('add_meta_boxes', [$this, 'add_course_meta_box']);
         
         // Save course meta
         add_action('save_post_' . $this->course_post_type, [$this, 'save_course_meta'], 10, 2);
+        
+        // Shortcode for course price
+        add_shortcode('sdmc_course_price', [$this, 'render_course_price_shortcode']);
     }
     
     /**
-     * Course price filter
+     * Course price filter - main handler
      */
-    public function course_price($price_html, $course_id) {
+    public function course_price($price_html, $course_id = null) {
         // Don't modify in admin
         if (is_admin() && !wp_doing_ajax()) {
             return $price_html;
@@ -89,6 +101,15 @@ class SDMC_Integrations_Tutor {
         
         // Check if Currency class exists
         if (!class_exists('SDMC_Currency')) {
+            return $price_html;
+        }
+        
+        // Get course ID if not provided
+        if (!$course_id) {
+            $course_id = get_the_ID();
+        }
+        
+        if (!$course_id) {
             return $price_html;
         }
         
@@ -102,14 +123,127 @@ class SDMC_Integrations_Tutor {
         // Get custom price for currency
         $custom_price = get_post_meta($course_id, '_sd_price_' . strtolower($currency), true);
         
-        if (empty($custom_price) || $custom_price <= 0) {
+        // If no custom price, return original
+        if (empty($custom_price) || !is_numeric($custom_price)) {
             return $price_html;
         }
         
-        // Format price
+        // Format price with symbol
         $symbol = SDMC_Currency::get_symbol($currency);
         
-        return '<span class="sdmc-course-price">' . esc_html($symbol . number_format($custom_price, 2)) . '</span>';
+        return '<span class="sdmc-course-price">' . esc_html($symbol . number_format((float)$custom_price, 2)) . '</span>';
+    }
+    
+    /**
+     * Filter course price meta - catches direct meta queries
+     */
+    public function filter_course_price_meta($metadata, $object_id, $meta_key, $single) {
+        // Only filter tutor course price meta
+        if ($meta_key !== '_tutor_course_price_type' && $meta_key !== '_tutor_regular_price') {
+            return $metadata;
+        }
+        
+        // Skip in admin
+        if (is_admin() && !wp_doing_ajax()) {
+            return $metadata;
+        }
+        
+        // Check if this is a course
+        $post_type = get_post_type($object_id);
+        if ($post_type !== $this->course_post_type) {
+            return $metadata;
+        }
+        
+        // Check currency class
+        if (!class_exists('SDMC_Currency')) {
+            return $metadata;
+        }
+        
+        $currency = SDMC_Currency::get_currency();
+        
+        // Skip if base currency
+        if ($currency === $this->base_currency) {
+            return $metadata;
+        }
+        
+        // Get custom price
+        $custom_price = get_post_meta($object_id, '_sd_price_' . strtolower($currency), true);
+        
+        if (!empty($custom_price) && is_numeric($custom_price)) {
+            // Return the custom price instead
+            return $custom_price;
+        }
+        
+        return $metadata;
+    }
+    
+    /**
+     * Start price capture
+     */
+    public function start_price_capture() {
+        ob_start();
+    }
+    
+    /**
+     * End price capture and modify
+     */
+    public function end_price_capture() {
+        $content = ob_get_clean();
+        
+        // Check currency
+        if (!class_exists('SDMC_Currency')) {
+            echo $content;
+            return;
+        }
+        
+        $currency = SDMC_Currency::get_currency();
+        
+        if ($currency === $this->base_currency) {
+            echo $content;
+            return;
+        }
+        
+        // Replace currency symbol in output
+        $base_symbol = SDMC_Currency::get_symbol($this->base_currency);
+        $new_symbol = SDMC_Currency::get_symbol($currency);
+        
+        // Replace the symbol
+        $content = str_replace($base_symbol, $new_symbol, $content);
+        
+        echo $content;
+    }
+    
+    /**
+     * Render course price shortcode
+     */
+    public function render_course_price_shortcode($atts) {
+        $atts = shortcode_atts([
+            'course_id' => get_the_ID(),
+            'currency' => '',
+        ], $atts);
+        
+        $course_id = intval($atts['course_id']);
+        $currency = $atts['currency'] ?: SDMC_Currency::get_currency();
+        
+        if (!$course_id) {
+            return '';
+        }
+        
+        $price = get_post_meta($course_id, '_sd_price_' . strtolower($currency), true);
+        
+        if (empty($price) || !is_numeric($price)) {
+            // Fallback to base price
+            $price = get_post_meta($course_id, '_sd_price_' . strtolower($this->base_currency), true);
+            $currency = $this->base_currency;
+        }
+        
+        if (empty($price)) {
+            return '';
+        }
+        
+        $symbol = SDMC_Currency::get_symbol($currency);
+        
+        return '<span class="sdmc-course-price">' . esc_html($symbol . number_format((float)$price, 2)) . '</span>';
     }
     
     /**
@@ -132,31 +266,35 @@ class SDMC_Integrations_Tutor {
     public function render_course_meta_box($post) {
         wp_nonce_field('sdmc_course_pricing', 'sdmc_course_pricing_nonce');
         
-        $currencies = SDMC_Settings::get_active_currencies();
-        $base_currency = SDMC_Settings::get_base_currency();
+        $currencies = ['ZAR', 'USD', 'GBP', 'EUR'];
+        $base_currency = $this->base_currency;
         
         echo '<div class="sdmc-course-pricing">';
-        echo '<p class="description">Set prices for each currency.</p>';
+        echo '<p class="description" style="margin-bottom: 15px;">Set prices for each currency.</p>';
         
         foreach ($currencies as $currency) {
             $symbol = SDMC_Currency::get_symbol($currency);
             $price = get_post_meta($post->ID, '_sd_price_' . strtolower($currency), true);
             $is_base = ($currency === $base_currency);
             
-            echo '<p>';
-            echo '<label for="sdmc_course_price_' . esc_attr(strtolower($currency)) . '">';
+            echo '<p style="margin-bottom: 10px;">';
+            echo '<label for="sdmc_course_price_' . esc_attr(strtolower($currency)) . '" style="display: block; margin-bottom: 5px;">';
             echo esc_html($symbol . ' ' . $currency);
             if ($is_base) {
-                echo ' <span class="sdmc-base-label">(Base)</span>';
+                echo ' <span style="color: #0073aa;">(Base)</span>';
             }
-            echo '</label><br>';
+            echo '</label>';
             echo '<input type="number" step="0.01" min="0" ';
             echo 'id="sdmc_course_price_' . esc_attr(strtolower($currency)) . '" ';
             echo 'name="sdmc_price_' . esc_attr(strtolower($currency)) . '" ';
             echo 'value="' . esc_attr($price) . '" ';
-            echo 'style="width:100%">';
+            echo 'style="width: 100%;">';
             echo '</p>';
         }
+        
+        echo '<p class="description" style="margin-top: 10px; color: #666; font-style: italic;">';
+        echo 'Leave empty to use the base currency price for that currency.';
+        echo '</p>';
         
         echo '</div>';
     }
@@ -182,7 +320,7 @@ class SDMC_Integrations_Tutor {
         }
         
         // Save prices
-        $currencies = SDMC_Settings::get_active_currencies();
+        $currencies = ['ZAR', 'USD', 'GBP', 'EUR'];
         
         foreach ($currencies as $currency) {
             $key = 'sdmc_price_' . strtolower($currency);

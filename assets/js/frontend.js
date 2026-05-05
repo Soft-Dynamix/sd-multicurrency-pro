@@ -5,9 +5,27 @@
 (function($) {
     'use strict';
     
+    // Currency data from PHP
+    var currentCurrency = (typeof sdmc_ajax !== 'undefined' && sdmc_ajax.current_currency) ? sdmc_ajax.current_currency : 'ZAR';
+    var baseCurrency = 'ZAR';
+    var symbols = {
+        'ZAR': 'R',
+        'USD': '$',
+        'GBP': '£',
+        'EUR': '€',
+        'AUD': 'A$',
+        'CAD': 'C$',
+        'NZD': 'NZ$'
+    };
+    
     // Document ready
     $(document).ready(function() {
         initSwitcher();
+        
+        // Apply price conversion on page load
+        if (currentCurrency !== baseCurrency) {
+            applyPriceConversion();
+        }
     });
     
     /**
@@ -100,19 +118,90 @@
     }
     
     /**
+     * Apply price conversion via AJAX
+     */
+    function applyPriceConversion() {
+        // Get all course/product prices on the page
+        var priceElements = [];
+        
+        // Tutor LMS price elements
+        $('.tutor-course-price, .tutor-price, .price').each(function() {
+            var $el = $(this);
+            var text = $el.text().trim();
+            
+            // Check if it contains a price pattern (R followed by number)
+            if (text.match(/R\s*[\d,]+\.?\d*/)) {
+                priceElements.push({
+                    element: $el,
+                    originalText: text
+                });
+            }
+        });
+        
+        // WooCommerce price elements
+        $('.woocommerce-Price-amount').each(function() {
+            var $el = $(this);
+            var text = $el.text().trim();
+            
+            if (text.match(/R\s*[\d,]+\.?\d*/)) {
+                priceElements.push({
+                    element: $el,
+                    originalText: text
+                });
+            }
+        });
+        
+        // If we have price elements, request conversion
+        if (priceElements.length > 0 && typeof sdmc_ajax !== 'undefined') {
+            // Request converted prices from server
+            $.ajax({
+                url: sdmc_ajax.ajax_url,
+                type: 'POST',
+                data: {
+                    action: 'sdmc_get_converted_prices',
+                    nonce: sdmc_ajax.nonce,
+                    currency: currentCurrency
+                },
+                success: function(response) {
+                    if (response.success && response.data.prices) {
+                        // Update prices with server data
+                        updatePricesFromServer(priceElements, response.data.prices, response.data.symbol);
+                    }
+                }
+            });
+        }
+    }
+    
+    /**
+     * Update prices from server response
+     */
+    function updatePricesFromServer(elements, prices, symbol) {
+        elements.forEach(function(item) {
+            var $el = item.element;
+            var text = item.originalText;
+            
+            // Extract price from text
+            var match = text.match(/R\s*([\d,]+\.?\d*)/);
+            if (match) {
+                var originalPrice = parseFloat(match[1].replace(/,/g, ''));
+                
+                // Format new price
+                var formattedPrice = symbol + ' ' + originalPrice.toLocaleString('en-ZA', {
+                    minimumFractionDigits: 2,
+                    maximumFractionDigits: 2
+                });
+                
+                // Replace in text
+                var newText = text.replace(/R\s*[\d,]+\.?\d*/, formattedPrice);
+                $el.text(newText);
+            }
+        });
+    }
+    
+    /**
      * Format price
      */
     function formatPrice(price, currency) {
-        var symbols = {
-            'ZAR': 'R',
-            'USD': '$',
-            'GBP': '£',
-            'EUR': '€',
-            'AUD': 'A$',
-            'CAD': 'C$',
-            'NZD': 'NZ$'
-        };
-        
         var symbol = symbols[currency] || currency;
         var formatted = parseFloat(price).toFixed(2).replace(/\B(?=(\d{3})+(?!\d))/g, ',');
         
@@ -128,7 +217,8 @@
     window.SDMC_Frontend = {
         setCurrency: setCurrency,
         formatPrice: formatPrice,
-        updateSwitcherUI: updateSwitcherUI
+        updateSwitcherUI: updateSwitcherUI,
+        applyPriceConversion: applyPriceConversion
     };
     
 })(jQuery);
