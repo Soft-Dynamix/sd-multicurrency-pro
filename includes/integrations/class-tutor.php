@@ -27,6 +27,11 @@ class SDMC_Integrations_Tutor {
     private $base_currency = 'ZAR';
     
     /**
+     * Course post type
+     */
+    private $course_post_type = 'courses';
+    
+    /**
      * Get instance
      */
     public static function get_instance() {
@@ -43,6 +48,14 @@ class SDMC_Integrations_Tutor {
         // Only initialize if Tutor LMS is active
         if (!class_exists('Tutor')) {
             return;
+        }
+        
+        // Safely get course post type
+        if (function_exists('tutor')) {
+            $tutor = tutor();
+            if (is_object($tutor) && isset($tutor->course_post_type)) {
+                $this->course_post_type = $tutor->course_post_type;
+            }
         }
         
         $this->settings = get_option('sdmc_settings', []);
@@ -62,7 +75,7 @@ class SDMC_Integrations_Tutor {
         add_action('add_meta_boxes', [$this, 'add_course_meta_box']);
         
         // Save course meta
-        add_action('save_post_' . tutor()->course_post_type, [$this, 'save_course_meta'], 10, 2);
+        add_action('save_post_' . $this->course_post_type, [$this, 'save_course_meta'], 10, 2);
     }
     
     /**
@@ -107,7 +120,7 @@ class SDMC_Integrations_Tutor {
             'sdmc_course_pricing',
             'Multi-Currency Pricing',
             [$this, 'render_course_meta_box'],
-            tutor()->course_post_type,
+            $this->course_post_type,
             'side',
             'default'
         );
