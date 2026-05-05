@@ -27,6 +27,11 @@ class SDMC_Frontend_Display {
     private $base_currency = 'ZAR';
     
     /**
+     * Course prices cache for JS
+     */
+    private $course_prices = [];
+    
+    /**
      * Get instance
      */
     public static function get_instance() {
@@ -64,25 +69,19 @@ class SDMC_Frontend_Display {
         add_filter('woocommerce_currency', [$this, 'change_woocommerce_currency'], 99);
         add_filter('woocommerce_currency_symbol', [$this, 'change_currency_symbol'], 99, 2);
         
-        // Tutor LMS - Multiple approaches
-        add_filter('tutor_course_price', [$this, 'tutor_course_price'], 999, 2);
-        add_filter('get_tutor_course_price', [$this, 'tutor_course_price'], 999, 2);
-        add_filter('tutor/course/price', [$this, 'tutor_course_price'], 999, 2);
-        
-        // Tutor LMS - Filter the actual price meta
+        // Tutor LMS - Filter price meta directly (most reliable method)
         add_filter('get_post_metadata', [$this, 'filter_tutor_price_meta'], 999, 4);
         
-        // Tutor LMS - Output buffering for price sections
-        add_action('tutor_course/single/content/before', [$this, 'start_tutor_price_buffer'], 1);
-        add_action('tutor_course/single/content/after', [$this, 'end_tutor_price_buffer'], 999);
+        // Tutor LMS - Multiple filter hooks
+        add_filter('tutor_course_price', [$this, 'tutor_course_price'], 999, 2);
+        add_filter('get_tutor_course_price', [$this, 'tutor_course_price'], 999, 2);
         
-        // Tutor LMS - Loop price buffer
-        add_action('tutor_course/before/loop', [$this, 'start_tutor_price_buffer'], 1);
-        add_action('tutor_course/after/loop', [$this, 'end_tutor_price_buffer'], 999);
+        // Tutor LMS - Add data attributes to price elements
+        add_action('wp_footer', [$this, 'output_price_data_script'], 999);
         
-        // Tutor LMS - Archive page buffer
-        add_action('tutor_before_course_archive_loop', [$this, 'start_tutor_price_buffer'], 1);
-        add_action('tutor_after_course_archive_loop', [$this, 'end_tutor_price_buffer'], 999);
+        // AJAX handler for getting converted prices
+        add_action('wp_ajax_sdmc_get_course_prices', [$this, 'ajax_get_course_prices']);
+        add_action('wp_ajax_nopriv_sdmc_get_course_prices', [$this, 'ajax_get_course_prices']);
         
         // Add checkout notice
         add_action('woocommerce_before_checkout_form', [$this, 'checkout_notice'], 5);
@@ -143,7 +142,7 @@ class SDMC_Frontend_Display {
         $product_id = $product->get_id();
         
         // Check for variation parent
-        if ($product->is_type('variation')) {
+        if (is_object($product) && method_exists($product, 'is_type') && $product->is_type('variation')) {
             $product_id = $product->get_parent_id();
         }
         
@@ -217,7 +216,7 @@ class SDMC_Frontend_Display {
     }
     
     /**
-     * Filter Tutor LMS course price
+     * Filter Tutor LMS course price - main filter
      */
     public function tutor_course_price($price_html, $course_id = null) {
         // Skip if in admin
@@ -241,23 +240,23 @@ class SDMC_Frontend_Display {
         }
         
         // Get currency-specific price
-        $currency_price = get_post_meta($course_id, '_sd_price_' . strtolower($currency), true);
+        $currency_price = $this->get_course_currency_price($course_id, $currency);
         
-        if (empty($currency_price) || !is_numeric($currency_price)) {
+        if ($currency_price === false) {
             return $price_html;
         }
         
         $symbol = SDMC_Currency::get_symbol($currency);
         
-        return '<span class="sdmc-price">' . esc_html($symbol . number_format((float)$currency_price, 2)) . '</span>';
+        return '<span class="sdmc-price" data-course-id="' . esc_attr($course_id) . '">' . esc_html($symbol . number_format($currency_price, 2)) . '</span>';
     }
     
     /**
-     * Filter Tutor LMS price meta directly
+     * Filter Tutor LMS price meta directly - catches the actual price value
      */
     public function filter_tutor_price_meta($metadata, $object_id, $meta_key, $single) {
-        // Only filter specific Tutor price meta keys
-        if (!in_array($meta_key, ['_tutor_course_price_type', '_tutor_regular_price', '_tutor_sale_price'])) {
+        // Only filter Tutor price meta keys
+        if (!in_array($meta_key, ['_tutor_regular_price', '_tutor_sale_price', '_tutor_course_price'])) {
             return $metadata;
         }
         
@@ -273,10 +272,14 @@ class SDMC_Frontend_Display {
             return $metadata;
         }
         
-        // Get our custom price
+        // Get our custom price for this currency
         $custom_price = get_post_meta($object_id, '_sd_price_' . strtolower($currency), true);
         
         if (!empty($custom_price) && is_numeric($custom_price)) {
+            // Store for JS
+            $this->course_prices[$object_id] = $this->course_prices[$object_id] ?? [];
+            $this->course_prices[$object_id][$currency] = $custom_price;
+            
             return $custom_price;
         }
         
@@ -284,42 +287,148 @@ class SDMC_Frontend_Display {
     }
     
     /**
-     * Start Tutor LMS price buffer
+     * Get course price for a specific currency
      */
-    public function start_tutor_price_buffer() {
-        ob_start([$this, 'replace_prices_in_content']);
-    }
-    
-    /**
-     * End Tutor LMS price buffer
-     */
-    public function end_tutor_price_buffer() {
-        ob_end_flush();
-    }
-    
-    /**
-     * Replace prices in content
-     */
-    public function replace_prices_in_content($content) {
-        $currency = $this->get_current_currency();
+    private function get_course_currency_price($course_id, $currency) {
+        $price = get_post_meta($course_id, '_sd_price_' . strtolower($currency), true);
         
-        // Skip if base currency
-        if ($currency === $this->base_currency) {
-            return $content;
+        if (empty($price) || !is_numeric($price)) {
+            return false;
         }
         
+        return (float) $price;
+    }
+    
+    /**
+     * AJAX handler to get course prices
+     */
+    public function ajax_get_course_prices() {
+        check_ajax_referer('sdmc_nonce', 'nonce');
+        
+        $currency = sanitize_text_field($_POST['currency'] ?? '');
+        $course_ids = isset($_POST['course_ids']) ? array_map('intval', $_POST['course_ids']) : [];
+        
+        if (empty($currency) || empty($course_ids)) {
+            wp_send_json_error(['message' => 'Missing parameters']);
+        }
+        
+        $prices = [];
+        $symbol = SDMC_Currency::get_symbol($currency);
+        
+        foreach ($course_ids as $course_id) {
+            $price = get_post_meta($course_id, '_sd_price_' . strtolower($currency), true);
+            
+            if (!empty($price) && is_numeric($price)) {
+                $prices[$course_id] = [
+                    'price' => (float) $price,
+                    'formatted' => $symbol . number_format((float) $price, 2)
+                ];
+            }
+        }
+        
+        wp_send_json_success([
+            'currency' => $currency,
+            'symbol' => $symbol,
+            'prices' => $prices
+        ]);
+    }
+    
+    /**
+     * Output price data script in footer
+     */
+    public function output_price_data_script() {
+        if (is_admin()) {
+            return;
+        }
+        
+        $currency = $this->get_current_currency();
         $symbol = SDMC_Currency::get_symbol($currency);
         $base_symbol = SDMC_Currency::get_symbol($this->base_currency);
         
-        // Replace R symbol with current currency symbol
-        // Pattern: R followed by number (with optional decimals and thousands separator)
-        $content = preg_replace(
-            '/\bR\s*(\d{1,3}(?:,\d{3})*(?:\.\d{2})?)/',
-            $symbol . ' $1',
-            $content
-        );
-        
-        return $content;
+        ?>
+        <script type="text/javascript">
+        (function($) {
+            'use strict';
+            
+            var sdmcData = {
+                currency: '<?php echo esc_js($currency); ?>',
+                baseCurrency: '<?php echo esc_js($this->base_currency); ?>',
+                symbol: '<?php echo esc_js($symbol); ?>',
+                baseSymbol: '<?php echo esc_js($base_symbol); ?>',
+                ajaxUrl: '<?php echo esc_url(admin_url('admin-ajax.php')); ?>',
+                nonce: '<?php echo esc_js(wp_create_nonce('sdmc_nonce')); ?>'
+            };
+            
+            // Find all course IDs on the page
+            var courseIds = [];
+            $('[data-course-id]').each(function() {
+                var id = $(this).data('course-id');
+                if (id && courseIds.indexOf(id) === -1) {
+                    courseIds.push(id);
+                }
+            });
+            
+            // Also try to find course IDs from Tutor LMS elements
+            $('.tutor-course-loop, .tutor-course-card, article.courses').each(function() {
+                var id = $(this).data('id') || $(this).attr('id');
+                if (id) {
+                    id = String(id).replace(/\D/g, '');
+                    if (id && courseIds.indexOf(parseInt(id)) === -1) {
+                        courseIds.push(parseInt(id));
+                    }
+                }
+            });
+            
+            // Update prices if not base currency
+            if (sdmcData.currency !== sdmcData.baseCurrency && courseIds.length > 0) {
+                updateCoursePrices(courseIds);
+            }
+            
+            function updateCoursePrices(courseIds) {
+                $.ajax({
+                    url: sdmcData.ajaxUrl,
+                    type: 'POST',
+                    data: {
+                        action: 'sdmc_get_course_prices',
+                        nonce: sdmcData.nonce,
+                        currency: sdmcData.currency,
+                        course_ids: courseIds
+                    },
+                    success: function(response) {
+                        if (response.success && response.data.prices) {
+                            $.each(response.data.prices, function(courseId, priceData) {
+                                // Update price elements
+                                $('[data-course-id="' + courseId + '"]').text(priceData.formatted);
+                                
+                                // Also update elements that might contain this course's price
+                                updatePriceInDOM(courseId, priceData);
+                            });
+                        }
+                    }
+                });
+            }
+            
+            function updatePriceInDOM(courseId, priceData) {
+                // Try to find and update Tutor LMS price elements
+                // This is a fallback for elements without data-course-id
+                
+                // Look for price elements near course cards
+                var $course = $('[data-id="' + courseId + '"], .tutor-course-card[data-id="' + courseId + '"]');
+                if ($course.length) {
+                    $course.find('.tutor-course-price, .price, .tutor-price').each(function() {
+                        var $el = $(this);
+                        var text = $el.text();
+                        // Replace the price pattern
+                        if (text.match(new RegExp(sdmcData.baseSymbol + '\\s*[\\d,]+\\.?\\d*'))) {
+                            $el.text(priceData.formatted);
+                        }
+                    });
+                }
+            }
+            
+        })(jQuery);
+        </script>
+        <?php
     }
     
     /**

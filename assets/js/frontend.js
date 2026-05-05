@@ -23,8 +23,10 @@
         initSwitcher();
         
         // Apply price conversion on page load
-        if (currentCurrency !== baseCurrency) {
-            applyPriceConversion();
+        if (currentCurrency !== baseCurrency && typeof sdmc_ajax !== 'undefined') {
+            setTimeout(function() {
+                loadAndApplyPrices();
+            }, 100);
         }
     });
     
@@ -118,54 +120,69 @@
     }
     
     /**
-     * Apply price conversion via AJAX
+     * Load prices from server and apply to page
      */
-    function applyPriceConversion() {
-        // Get all course/product prices on the page
-        var priceElements = [];
+    function loadAndApplyPrices() {
+        // Find all course IDs on the page
+        var courseIds = [];
+        var coursePriceMap = {}; // Map of course ID to price element
         
-        // Tutor LMS price elements
-        $('.tutor-course-price, .tutor-price, .price').each(function() {
-            var $el = $(this);
-            var text = $el.text().trim();
-            
-            // Check if it contains a price pattern (R followed by number)
-            if (text.match(/R\s*[\d,]+\.?\d*/)) {
-                priceElements.push({
-                    element: $el,
-                    originalText: text
-                });
+        // Method 1: Look for data-course-id attributes
+        $('[data-course-id]').each(function() {
+            var id = $(this).data('course-id');
+            if (id && courseIds.indexOf(id) === -1) {
+                courseIds.push(id);
             }
         });
         
-        // WooCommerce price elements
-        $('.woocommerce-Price-amount').each(function() {
+        // Method 2: Look for Tutor LMS course cards/loops
+        $('.tutor-course-loop, .tutor-course-card, article.courses').each(function() {
             var $el = $(this);
-            var text = $el.text().trim();
-            
-            if (text.match(/R\s*[\d,]+\.?\d*/)) {
-                priceElements.push({
-                    element: $el,
-                    originalText: text
-                });
+            var id = $el.data('id') || $el.attr('id');
+            if (id) {
+                id = String(id).replace(/\D/g, '');
+                if (id && courseIds.indexOf(parseInt(id)) === -1) {
+                    courseIds.push(parseInt(id));
+                    coursePriceMap[id] = $el;
+                }
             }
         });
         
-        // If we have price elements, request conversion
-        if (priceElements.length > 0 && typeof sdmc_ajax !== 'undefined') {
-            // Request converted prices from server
+        // Method 3: Look for WooCommerce products
+        $('.product, .wc-block-product').each(function() {
+            var $el = $(this);
+            var id = $el.data('id') || $el.attr('id');
+            if (id) {
+                id = String(id).replace(/\D/g, '');
+                if (id && courseIds.indexOf(parseInt(id)) === -1) {
+                    courseIds.push(parseInt(id));
+                }
+            }
+        });
+        
+        // Method 4: Extract from page content if available
+        if (typeof sdmc_course_ids !== 'undefined' && sdmc_course_ids.length > 0) {
+            sdmc_course_ids.forEach(function(id) {
+                if (courseIds.indexOf(id) === -1) {
+                    courseIds.push(id);
+                }
+            });
+        }
+        
+        // If we found course IDs, fetch their prices
+        if (courseIds.length > 0) {
             $.ajax({
                 url: sdmc_ajax.ajax_url,
                 type: 'POST',
                 data: {
-                    action: 'sdmc_get_converted_prices',
+                    action: 'sdmc_get_course_prices',
                     nonce: sdmc_ajax.nonce,
-                    currency: currentCurrency
+                    currency: currentCurrency,
+                    course_ids: courseIds
                 },
                 success: function(response) {
                     if (response.success && response.data.prices) {
-                        // Update prices with server data
-                        updatePricesFromServer(priceElements, response.data.prices, response.data.symbol);
+                        applyPrices(response.data.prices, response.data.symbol);
                     }
                 }
             });
@@ -173,29 +190,49 @@
     }
     
     /**
-     * Update prices from server response
+     * Apply prices to DOM elements
      */
-    function updatePricesFromServer(elements, prices, symbol) {
-        elements.forEach(function(item) {
-            var $el = item.element;
-            var text = item.originalText;
+    function applyPrices(prices, symbol) {
+        var baseSymbol = symbols[baseCurrency] || 'R';
+        
+        $.each(prices, function(courseId, priceData) {
+            // Update elements with data-course-id
+            $('[data-course-id="' + courseId + '"]').each(function() {
+                $(this).text(priceData.formatted);
+            });
             
-            // Extract price from text
-            var match = text.match(/R\s*([\d,]+\.?\d*)/);
-            if (match) {
-                var originalPrice = parseFloat(match[1].replace(/,/g, ''));
+            // Update Tutor LMS price elements within course cards
+            if (priceData.formatted) {
+                // Find course container
+                var $container = $('[data-id="' + courseId + '"]');
+                if ($container.length === 0) {
+                    $container = $('.tutor-course-card[data-id="' + courseId + '"]');
+                }
+                if ($container.length === 0) {
+                    $container = $('#course-' + courseId);
+                }
                 
-                // Format new price
-                var formattedPrice = symbol + ' ' + originalPrice.toLocaleString('en-ZA', {
-                    minimumFractionDigits: 2,
-                    maximumFractionDigits: 2
-                });
-                
-                // Replace in text
-                var newText = text.replace(/R\s*[\d,]+\.?\d*/, formattedPrice);
-                $el.text(newText);
+                if ($container.length) {
+                    // Update price elements inside
+                    $container.find('.tutor-course-price, .price, .tutor-price, .woocommerce-Price-amount').each(function() {
+                        $(this).text(priceData.formatted);
+                    });
+                }
             }
         });
+        
+        // Fallback: Replace all R symbols with current currency symbol
+        // This catches any prices we missed
+        if (symbol !== baseSymbol) {
+            $('.tutor-course-price, .price, .tutor-price, .woocommerce-Price-amount').each(function() {
+                var $el = $(this);
+                var text = $el.text();
+                var newText = text.replace(new RegExp(baseSymbol + '\\s*'), symbol);
+                if (text !== newText) {
+                    $el.text(newText);
+                }
+            });
+        }
     }
     
     /**
@@ -218,7 +255,7 @@
         setCurrency: setCurrency,
         formatPrice: formatPrice,
         updateSwitcherUI: updateSwitcherUI,
-        applyPriceConversion: applyPriceConversion
+        loadAndApplyPrices: loadAndApplyPrices
     };
     
 })(jQuery);
