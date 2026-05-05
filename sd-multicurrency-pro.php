@@ -3,7 +3,7 @@
  * Plugin Name: SD MultiCurrency Pro
  * Plugin URI: https://softdynamix.co.za/plugins/sd-multicurrency-pro
  * Description: Multi-currency pricing for WooCommerce + Tutor LMS. Display prices in multiple currencies while charging in ZAR. Perfect for South African businesses using Yoco.
- * Version: 1.0.2
+ * Version: 1.0.3
  * Author: Soft Dynamix
  * Author URI: https://softdynamix.co.za
  * License: GPL-2.0+
@@ -22,7 +22,7 @@ if (!defined('ABSPATH')) {
 }
 
 // Plugin Constants
-define('SDMC_VERSION', '1.0.2');
+define('SDMC_VERSION', '1.0.3');
 define('SDMC_PATH', plugin_dir_path(__FILE__));
 define('SDMC_URL', plugin_dir_url(__FILE__));
 define('SDMC_BASENAME', plugin_basename(__FILE__));
@@ -151,7 +151,8 @@ function sdmc_activate() {
     ];
     
     add_option('sdmc_settings', $default_settings);
-    add_option('sdmc_run_wizard', true);
+    // Don't run wizard - disabled to prevent conflicts
+    // add_option('sdmc_run_wizard', true);
     
     // Create license option with pre-activated license
     // Use gmdate() to avoid timezone warnings

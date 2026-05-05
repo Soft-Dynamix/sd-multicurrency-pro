@@ -2,7 +2,7 @@
 /**
  * Admin Onboarding Class
  * 
- * Handles setup wizard
+ * Handles setup wizard - DISABLED by default to prevent conflicts
  */
 
 if (!defined('ABSPATH')) {
@@ -30,14 +30,21 @@ class SDMC_Admin_Onboarding {
      * Constructor
      */
     public function __construct() {
-        add_action('admin_init', [$this, 'maybe_redirect_to_wizard']);
-        add_action('admin_menu', [$this, 'add_wizard_page']);
+        // Automatically clear wizard flag on activation to prevent redirect issues
+        delete_option('sdmc_run_wizard');
+        
+        // Wizard disabled - no hooks added
+        // add_action('admin_init', [$this, 'maybe_redirect_to_wizard']);
+        // add_action('admin_menu', [$this, 'add_wizard_page']);
     }
     
     /**
-     * Maybe redirect to wizard
+     * Maybe redirect to wizard - DISABLED
      */
     public function maybe_redirect_to_wizard() {
+        // Disabled to prevent white screen of death
+        return;
+        
         // Only on admin
         if (!is_admin()) {
             return;
@@ -56,7 +63,7 @@ class SDMC_Admin_Onboarding {
         }
         
         // Check if we're already on wizard page
-        $screen = get_current_screen();
+        $screen = function_exists('get_current_screen') ? get_current_screen() : null;
         if ($screen && $screen->id === 'admin_page_sdmc-wizard') {
             return;
         }
@@ -84,25 +91,11 @@ class SDMC_Admin_Onboarding {
      * Render wizard
      */
     public function render_wizard() {
-        include SDMC_PATH . 'includes/admin/views/wizard/header.php';
+        // Mark wizard as complete immediately
+        delete_option('sdmc_run_wizard');
         
-        $step = isset($_GET['step']) ? intval($_GET['step']) : 1;
-        
-        switch ($step) {
-            case 2:
-                include SDMC_PATH . 'includes/admin/views/wizard/step-2.php';
-                break;
-            case 3:
-                include SDMC_PATH . 'includes/admin/views/wizard/step-3.php';
-                break;
-            case 4:
-                include SDMC_PATH . 'includes/admin/views/wizard/step-4.php';
-                break;
-            default:
-                include SDMC_PATH . 'includes/admin/views/wizard/step-1.php';
-                break;
-        }
-        
-        include SDMC_PATH . 'includes/admin/views/wizard/footer.php';
+        // Redirect to dashboard
+        wp_safe_redirect(admin_url('admin.php?page=sd-multicurrency-pro'));
+        exit;
     }
 }
