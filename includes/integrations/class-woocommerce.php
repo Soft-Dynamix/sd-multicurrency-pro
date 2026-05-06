@@ -4,6 +4,10 @@
  * 
  * Handles WooCommerce-specific hooks and filters
  * Supports exchange rate conversion for Yoco payment gateway (ZAR only)
+ * 
+ * IMPORTANT: WooCommerce cart always uses ZAR internally.
+ * Currency switching is only for DISPLAY purposes.
+ * Yoco only accepts ZAR payments.
  */
 
 if (!defined('ABSPATH')) {
@@ -38,6 +42,11 @@ class SDMC_Integrations_Woocommerce {
     private $conversion_data = [];
     
     /**
+     * Flag to prevent recursive price filtering
+     */
+    private $filtering_price = false;
+    
+    /**
      * Get instance
      */
     public static function get_instance() {
@@ -66,13 +75,16 @@ class SDMC_Integrations_Woocommerce {
      * Initialize hooks
      */
     private function init_hooks() {
-        // Currency symbol filter - change symbol based on selected currency
+        // Change displayed currency symbol
         add_filter('woocommerce_currency_symbol', [$this, 'set_currency_symbol'], 10, 2);
         
-        // Checkout - convert foreign currency prices back to ZAR for Yoco payment
-        add_action('woocommerce_before_calculate_totals', [$this, 'convert_checkout_to_zar']);
+        // Change displayed currency code
+        add_filter('woocommerce_currency', [$this, 'change_displayed_currency'], 99);
         
-        // Add order meta data for currency conversion tracking
+        // Filter DISPLAYED price HTML (not the actual price)
+        add_filter('woocommerce_get_price_html', [$this, 'filter_price_html'], 99, 2);
+        
+        // Add order meta data for currency tracking
         add_action('woocommerce_checkout_create_order', [$this, 'add_order_meta']);
         
         // Display conversion info in order admin
@@ -81,20 +93,17 @@ class SDMC_Integrations_Woocommerce {
         // Add conversion info to order emails
         add_action('woocommerce_email_after_order_table', [$this, 'email_conversion_info'], 10, 4);
         
-        // Filter product price on frontend to show currency-specific price
-        add_filter('woocommerce_product_get_price', [$this, 'get_product_price'], 99, 2);
-        add_filter('woocommerce_product_get_regular_price', [$this, 'get_product_price'], 99, 2);
-        add_filter('woocommerce_product_get_sale_price', [$this, 'get_product_price'], 99, 2);
-        add_filter('woocommerce_product_variation_get_price', [$this, 'get_product_price'], 99, 2);
-        add_filter('woocommerce_product_variation_get_regular_price', [$this, 'get_product_price'], 99, 2);
-        add_filter('woocommerce_product_variation_get_sale_price', [$this, 'get_product_price'], 99, 2);
+        // Cart item price display (for mini cart, cart page)
+        add_filter('woocommerce_cart_item_price', [$this, 'filter_cart_item_price'], 99, 3);
+        add_filter('woocommerce_cart_item_subtotal', [$this, 'filter_cart_item_subtotal'], 99, 3);
+        add_filter('woocommerce_cart_total', [$this, 'filter_cart_total'], 99);
         
-        // Change displayed currency
-        add_filter('woocommerce_currency', [$this, 'change_woocommerce_currency'], 99);
+        // Checkout notice
+        add_action('woocommerce_before_checkout_form', [$this, 'checkout_notice'], 5);
     }
     
     /**
-     * Set currency symbol
+     * Set currency symbol for display
      */
     public function set_currency_symbol($symbol, $currency) {
         if (is_admin() && !wp_doing_ajax()) {
@@ -105,10 +114,9 @@ class SDMC_Integrations_Woocommerce {
             return $symbol;
         }
         
-        // Get the user's selected display currency
         $display_currency = SDMC_Currency::get_currency();
         
-        // If display currency matches the requested currency, return its symbol
+        // Return the symbol for the display currency
         if ($currency === $display_currency) {
             return SDMC_Currency::get_symbol($display_currency);
         }
@@ -117,119 +125,224 @@ class SDMC_Integrations_Woocommerce {
     }
     
     /**
-     * Convert foreign currency prices to ZAR at checkout for Yoco payment
+     * Change displayed currency code
      */
-    public function convert_checkout_to_zar($cart) {
+    public function change_displayed_currency($currency) {
         if (is_admin() && !wp_doing_ajax()) {
-            return;
+            return $currency;
         }
         
-        // Only run at checkout - check if function exists
-        if (function_exists('is_checkout') && !is_checkout()) {
-            // Also check for order-pay endpoint
-            if (function_exists('is_wc_endpoint_url') && !is_wc_endpoint_url('order-pay')) {
-                return;
+        if (!class_exists('SDMC_Currency')) {
+            return $currency;
+        }
+        
+        // Check if we're on checkout - always show ZAR there for Yoco compatibility
+        if (function_exists('is_checkout') && is_checkout()) {
+            return $this->base_currency;
+        }
+        
+        return SDMC_Currency::get_currency();
+    }
+    
+    /**
+     * Filter price HTML for display
+     */
+    public function filter_price_html($price_html, $product) {
+        if (is_admin() && !wp_doing_ajax()) {
+            return $price_html;
+        }
+        
+        // Don't filter on checkout - Yoco needs ZAR
+        if (function_exists('is_checkout') && is_checkout()) {
+            return $price_html;
+        }
+        
+        if (!class_exists('SDMC_Currency')) {
+            return $price_html;
+        }
+        
+        $display_currency = SDMC_Currency::get_currency();
+        
+        // Skip if base currency
+        if ($display_currency === $this->base_currency) {
+            return $price_html;
+        }
+        
+        // Get the currency-specific price
+        $product_id = $product->get_id();
+        if (method_exists($product, 'is_type') && $product->is_type('variation')) {
+            $product_id = $product->get_parent_id();
+        }
+        
+        $currency_price = get_post_meta($product_id, '_sd_price_' . strtolower($display_currency), true);
+        
+        if (empty($currency_price) || !is_numeric($currency_price)) {
+            return $price_html;
+        }
+        
+        // Format the price in the display currency
+        $symbol = SDMC_Currency::get_symbol($display_currency);
+        $formatted_price = $symbol . number_format((float)$currency_price, 2);
+        
+        // Replace the price in the HTML
+        return '<span class="woocommerce-Price-amount amount">' . $formatted_price . '</span>';
+    }
+    
+    /**
+     * Filter cart item price for display
+     */
+    public function filter_cart_item_price($price, $cart_item, $cart_item_key) {
+        // Don't filter on checkout
+        if (function_exists('is_checkout') && is_checkout()) {
+            return $price;
+        }
+        
+        if (!class_exists('SDMC_Currency')) {
+            return $price;
+        }
+        
+        $display_currency = SDMC_Currency::get_currency();
+        
+        if ($display_currency === $this->base_currency) {
+            return $price;
+        }
+        
+        $product_id = $cart_item['product_id'];
+        $currency_price = get_post_meta($product_id, '_sd_price_' . strtolower($display_currency), true);
+        
+        if (empty($currency_price) || !is_numeric($currency_price)) {
+            return $price;
+        }
+        
+        $symbol = SDMC_Currency::get_symbol($display_currency);
+        return $symbol . number_format((float)$currency_price, 2);
+    }
+    
+    /**
+     * Filter cart item subtotal for display
+     */
+    public function filter_cart_item_subtotal($subtotal, $cart_item, $cart_item_key) {
+        // Don't filter on checkout
+        if (function_exists('is_checkout') && is_checkout()) {
+            return $subtotal;
+        }
+        
+        if (!class_exists('SDMC_Currency')) {
+            return $subtotal;
+        }
+        
+        $display_currency = SDMC_Currency::get_currency();
+        
+        if ($display_currency === $this->base_currency) {
+            return $subtotal;
+        }
+        
+        $product_id = $cart_item['product_id'];
+        $currency_price = get_post_meta($product_id, '_sd_price_' . strtolower($display_currency), true);
+        
+        if (empty($currency_price) || !is_numeric($currency_price)) {
+            return $subtotal;
+        }
+        
+        $quantity = $cart_item['quantity'];
+        $total = (float)$currency_price * $quantity;
+        
+        $symbol = SDMC_Currency::get_symbol($display_currency);
+        return $symbol . number_format($total, 2);
+    }
+    
+    /**
+     * Filter cart total for display
+     */
+    public function filter_cart_total($total) {
+        // Don't filter on checkout
+        if (function_exists('is_checkout') && is_checkout()) {
+            return $total;
+        }
+        
+        if (!class_exists('SDMC_Currency')) {
+            return $total;
+        }
+        
+        $display_currency = SDMC_Currency::get_currency();
+        
+        if ($display_currency === $this->base_currency) {
+            return $total;
+        }
+        
+        // Calculate total from cart items
+        $cart_total = 0;
+        if (function_exists('WC') && isset(WC()->cart)) {
+            foreach (WC()->cart->get_cart() as $cart_item) {
+                $product_id = $cart_item['product_id'];
+                $currency_price = get_post_meta($product_id, '_sd_price_' . strtolower($display_currency), true);
+                
+                if (!empty($currency_price) && is_numeric($currency_price)) {
+                    $cart_total += (float)$currency_price * $cart_item['quantity'];
+                }
             }
         }
         
-        if (!class_exists('SDMC_Currency') || !class_exists('SDMC_Exchange_Rates')) {
+        if ($cart_total > 0) {
+            $symbol = SDMC_Currency::get_symbol($display_currency);
+            return '<strong>' . $symbol . number_format($cart_total, 2) . '</strong>';
+        }
+        
+        return $total;
+    }
+    
+    /**
+     * Add order meta data for currency tracking
+     */
+    public function add_order_meta($order) {
+        if (!class_exists('SDMC_Currency')) {
             return;
         }
         
-        // Get current display currency
-        $current_currency = SDMC_Currency::get_currency();
+        $customer_currency = SDMC_Currency::get_currency();
         
-        // Skip if already base currency (ZAR)
-        if ($current_currency === $this->base_currency) {
+        if ($customer_currency === $this->base_currency) {
             return;
         }
         
-        // Store customer currency for order meta
-        $this->customer_currency = $current_currency;
+        // Store the currency the customer was viewing
+        $order->update_meta_data('_sdmc_customer_currency', $customer_currency);
+        $order->update_meta_data('_sdmc_base_currency', $this->base_currency);
         
-        // Get exchange rate
-        $exchange_rate = SDMC_Exchange_Rates::get_rate($current_currency);
-        
-        // Set cart prices to ZAR equivalent for Yoco payment
-        if (is_object($cart) && method_exists($cart, 'get_cart')) {
-            foreach ($cart->get_cart() as $cart_item_key => $cart_item) {
-                if (!isset($cart_item['data'])) {
-                    continue;
-                }
-                
-                $product = $cart_item['data'];
-                $product_id = $product->get_id();
-                
-                // Get the price in customer's selected currency
-                $foreign_price = get_post_meta($product_id, '_sd_price_' . strtolower($current_currency), true);
-                
-                // Fallback to base currency price if no foreign price set
-                if (empty($foreign_price) || !is_numeric($foreign_price)) {
-                    $foreign_price = get_post_meta($product_id, '_sd_price_' . strtolower($this->base_currency), true);
-                    
-                    // Final fallback to regular price
-                    if (empty($foreign_price) && method_exists($product, 'get_regular_price')) {
-                        $foreign_price = $product->get_regular_price();
-                    }
-                    
-                    // If still no price, skip
-                    if (empty($foreign_price)) {
-                        continue;
-                    }
-                    
-                    // Use the stored ZAR price directly
-                    $zar_amount = (float) $foreign_price;
-                } else {
-                    // Convert foreign currency price to ZAR for Yoco
-                    if ($exchange_rate) {
-                        $zar_amount = (float) $foreign_price / $exchange_rate;
-                        $zar_amount = round($zar_amount, 2);
-                    } else {
-                        // No exchange rate - use stored ZAR price as fallback
-                        $zar_price = get_post_meta($product_id, '_sd_price_' . strtolower($this->base_currency), true);
-                        $zar_amount = !empty($zar_price) ? (float) $zar_price : (float) $foreign_price;
-                    }
-                }
-                
-                // Set the product price to ZAR amount for Yoco
-                if ($zar_amount > 0 && method_exists($product, 'set_price')) {
-                    $product->set_price($zar_amount);
-                    
-                    // Store conversion data for order meta
-                    $this->conversion_data[$cart_item_key] = [
-                        'original_currency' => $current_currency,
-                        'original_price' => (float) $foreign_price,
-                        'zar_price' => $zar_amount,
-                        'exchange_rate' => $exchange_rate ?: null,
-                    ];
-                }
-            }
+        // Get exchange rate at time of order
+        if (class_exists('SDMC_Exchange_Rates')) {
+            $rate = SDMC_Exchange_Rates::get_rate($customer_currency);
+            $order->update_meta_data('_sdmc_exchange_rate', $rate);
+            $order->update_meta_data('_sdmc_rate_last_update', SDMC_Exchange_Rates::get_last_update());
         }
     }
     
     /**
-     * Add currency conversion meta data to order
+     * Display checkout notice
      */
-    public function add_order_meta($order) {
-        if (empty($this->customer_currency) || $this->customer_currency === $this->base_currency) {
+    public function checkout_notice() {
+        $settings = get_option('sdmc_settings', []);
+        
+        if (empty($settings['checkout_notice'])) {
             return;
         }
         
-        // Add general currency info
-        $order->update_meta_data('_sdmc_customer_currency', $this->customer_currency);
-        $order->update_meta_data('_sdmc_base_currency', $this->base_currency);
-        
-        // Add conversion details for each item
-        if (!empty($this->conversion_data)) {
-            $order->update_meta_data('_sdmc_conversion_data', $this->conversion_data);
+        if (!class_exists('SDMC_Currency')) {
+            return;
         }
         
-        // Add exchange rate at time of order
-        if (class_exists('SDMC_Exchange_Rates')) {
-            $rate = SDMC_Exchange_Rates::get_rate($this->customer_currency);
-            $order->update_meta_data('_sdmc_exchange_rate', $rate);
-            $order->update_meta_data('_sdmc_rate_last_update', SDMC_Exchange_Rates::get_last_update());
+        $customer_currency = SDMC_Currency::get_currency();
+        
+        if ($customer_currency === $this->base_currency) {
+            return;
         }
+        
+        echo '<div class="woocommerce-info sdmc-checkout-currency-notice">';
+        echo sprintf(
+            esc_html__('You were viewing prices in %s. Payment will be processed in ZAR (South African Rand) via Yoco.', 'sd-multicurrency-pro'),
+            '<strong>' . esc_html($customer_currency) . '</strong>'
+        );
+        echo '</div>';
     }
     
     /**
@@ -245,7 +358,6 @@ class SDMC_Integrations_Woocommerce {
         $zar_amount = $order->get_total();
         $original_rate = $order->get_meta('_sdmc_exchange_rate');
         $last_update = $order->get_meta('_sdmc_rate_last_update');
-        $conversion_data = $order->get_meta('_sdmc_conversion_data');
         
         ?>
         <div class="sdmc-order-conversion-info" style="background: #f6f7f7; padding: 12px; margin-top: 10px; border-radius: 4px;">
@@ -290,77 +402,13 @@ class SDMC_Integrations_Woocommerce {
             echo "\n";
         } else {
             echo '<div style="margin: 20px 0; padding: 15px; background: #f6f7f7; border-radius: 4px;">';
-            echo '<h4 style="margin: 0 0 10px 0;">' . esc_html__('Currency Conversion', 'sd-multicurrency-pro') . '</h4>';
             echo '<p style="margin: 0;">';
             echo sprintf(
                 __('You viewed prices in %s. Your card was charged in ZAR (South African Rand).', 'sd-multicurrency-pro'),
                 '<strong>' . esc_html($customer_currency) . '</strong>'
             );
             echo '</p>';
-            echo '<p style="margin: 10px 0 0 0;"><strong>' . esc_html__('Amount Charged:', 'sd-multicurrency-pro') . '</strong> R' . esc_html(number_format((float)$zar_amount, 2)) . ' ZAR</p>';
             echo '</div>';
         }
-    }
-    
-    /**
-     * Get product price in current currency for frontend display
-     */
-    public function get_product_price($price, $product) {
-        // Skip in admin
-        if (is_admin() && !wp_doing_ajax()) {
-            return $price;
-        }
-        
-        // Skip if no product
-        if (!$product) {
-            return $price;
-        }
-        
-        // Get current currency
-        if (!class_exists('SDMC_Currency')) {
-            return $price;
-        }
-        
-        $current_currency = SDMC_Currency::get_currency();
-        
-        // Skip if base currency
-        if ($current_currency === $this->base_currency) {
-            return $price;
-        }
-        
-        // Get product ID
-        $product_id = $product->get_id();
-        
-        // Check for variation parent
-        if (is_object($product) && method_exists($product, 'is_type') && $product->is_type('variation')) {
-            $product_id = $product->get_parent_id();
-        }
-        
-        // Get currency-specific price
-        $currency_price = get_post_meta($product_id, '_sd_price_' . strtolower($current_currency), true);
-        
-        // Return the currency-specific price if set
-        if (!empty($currency_price) && is_numeric($currency_price)) {
-            return number_format((float)$currency_price, 2, '.', '');
-        }
-        
-        // No currency price set - return original price
-        return $price;
-    }
-    
-    /**
-     * Change WooCommerce currency for display
-     */
-    public function change_woocommerce_currency($currency) {
-        // Skip in admin
-        if (is_admin() && !wp_doing_ajax()) {
-            return $currency;
-        }
-        
-        if (!class_exists('SDMC_Currency')) {
-            return $currency;
-        }
-        
-        return SDMC_Currency::get_currency();
     }
 }
