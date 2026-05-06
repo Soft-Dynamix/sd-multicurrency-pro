@@ -68,6 +68,16 @@ class SDMC_Admin_Menu {
             [$this, 'render_settings']
         );
         
+        // Exchange Rates
+        add_submenu_page(
+            'sd-multicurrency-pro',
+            'Exchange Rates',
+            'Exchange Rates',
+            'manage_options',
+            'sdmc-exchange-rates',
+            [$this, 'render_exchange_rates']
+        );
+        
         // License
         add_submenu_page(
             'sd-multicurrency-pro',
@@ -91,6 +101,13 @@ class SDMC_Admin_Menu {
      */
     public function render_settings() {
         include SDMC_PATH . 'includes/admin/views/settings.php';
+    }
+    
+    /**
+     * Render exchange rates
+     */
+    public function render_exchange_rates() {
+        include SDMC_PATH . 'includes/admin/views/exchange-rates.php';
     }
     
     /**

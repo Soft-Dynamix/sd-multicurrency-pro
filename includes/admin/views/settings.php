@@ -82,6 +82,32 @@ $active_currencies = $settings['active_currencies'] ?? ['ZAR', 'USD', 'GBP', 'EU
                     </label>
                 </td>
             </tr>
+            
+            <!-- Auto Detect Currency -->
+            <tr>
+                <th scope="row">Auto-Detect Currency</th>
+                <td>
+                    <label>
+                        <input type="checkbox" name="sdmc_settings[auto_detect_currency]" value="1" <?php checked(!empty($settings['auto_detect_currency'])); ?>>
+                        Automatically detect customer's currency based on their location
+                    </label>
+                    <p class="description">
+                        When enabled, first-time visitors will see prices in their local currency (if available). 
+                        They can still manually change currency using the switcher.
+                    </p>
+                    <p class="description" style="margin-top: 10px;">
+                        <strong>Country to Currency Mapping:</strong><br>
+                        🇿🇦 South Africa, Namibia, Lesotho, Eswatini → ZAR<br>
+                        🇺🇸 United States, Mexico, Brazil → USD<br>
+                        🇬🇧 United Kingdom → GBP<br>
+                        🇪🇺 Eurozone countries → EUR<br>
+                        🇨🇦 Canada → CAD<br>
+                        🇦🇺 Australia → AUD<br>
+                        🇳🇿 New Zealand → NZD<br>
+                        Other countries → USD (fallback)
+                    </p>
+                </td>
+            </tr>
         </table>
         
         <p class="submit">
@@ -105,7 +131,8 @@ jQuery(document).ready(function($) {
                 active_currencies: $('input[name="sdmc_settings[active_currencies][]"]:checked').map(function() { return $(this).val(); }).get(),
                 switcher_style: $('#sdmc_switcher_style').val(),
                 checkout_notice: $('input[name="sdmc_settings[checkout_notice]"]').is(':checked') ? 1 : 0,
-                show_flag: $('input[name="sdmc_settings[show_flag]"]').is(':checked') ? 1 : 0
+                show_flag: $('input[name="sdmc_settings[show_flag]"]').is(':checked') ? 1 : 0,
+                auto_detect_currency: $('input[name="sdmc_settings[auto_detect_currency]"]').is(':checked') ? 1 : 0
             }
         }, function(response) {
             if (response.success) {

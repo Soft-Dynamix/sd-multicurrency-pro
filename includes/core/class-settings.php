@@ -55,7 +55,8 @@ class SDMC_Settings {
             'checkout_notice' => 1,
             'pricing_mode' => 'manual',
             'show_flag' => 1,
-            'switcher_style' => 'dropdown'
+            'switcher_style' => 'dropdown',
+            'auto_detect_currency' => 1,
         ]);
     }
     
@@ -122,7 +123,8 @@ class SDMC_Settings {
             'checkout_notice' => isset($settings['checkout_notice']) ? 1 : 0,
             'pricing_mode' => sanitize_text_field($settings['pricing_mode'] ?? 'manual'),
             'show_flag' => isset($settings['show_flag']) ? 1 : 0,
-            'switcher_style' => sanitize_text_field($settings['switcher_style'] ?? 'dropdown')
+            'switcher_style' => sanitize_text_field($settings['switcher_style'] ?? 'dropdown'),
+            'auto_detect_currency' => isset($settings['auto_detect_currency']) ? 1 : 0,
         ];
         
         // Sanitize symbol map

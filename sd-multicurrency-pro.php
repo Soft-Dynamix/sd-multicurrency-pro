@@ -64,6 +64,8 @@ function sdmc_include_files() {
     require_once SDMC_PATH . 'includes/core/class-settings.php';
     require_once SDMC_PATH . 'includes/core/class-helpers.php';
     require_once SDMC_PATH . 'includes/core/class-license.php';
+    require_once SDMC_PATH . 'includes/core/class-exchange-rates.php';
+    require_once SDMC_PATH . 'includes/core/class-geolocation.php';
     
     // Integrations
     require_once SDMC_PATH . 'includes/integrations/class-woocommerce.php';
@@ -101,6 +103,8 @@ function sdmc_init() {
     SDMC_Currency::get_instance();
     SDMC_Settings::get_instance();
     SDMC_Helpers::get_instance();
+    SDMC_Exchange_Rates::get_instance();
+    SDMC_Geolocation::get_instance();
     
     // Initialize WooCommerce Integration
     SDMC_Integrations_Woocommerce::get_instance();
@@ -174,6 +178,7 @@ register_deactivation_hook(__FILE__, 'sdmc_deactivate');
 function sdmc_deactivate() {
     // Clear scheduled events
     wp_clear_scheduled_hook('sdmc_daily_license_check');
+    wp_clear_scheduled_hook('sdmc_update_rates_event');
     
     flush_rewrite_rules();
 }
