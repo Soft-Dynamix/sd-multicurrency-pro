@@ -2,7 +2,8 @@
 /**
  * Frontend Display Class
  * 
- * Handles frontend price display modifications
+ * Handles frontend price display modifications for Tutor LMS
+ * WooCommerce handling is in class-woocommerce.php
  */
 
 if (!defined('ABSPATH')) {
@@ -43,35 +44,18 @@ class SDMC_Frontend_Display {
         $settings = get_option('sdmc_settings', []);
         $this->base_currency = $settings['base_currency'] ?? 'ZAR';
         
-        // WooCommerce price filters
-        add_filter('woocommerce_product_get_price', [$this, 'get_product_price'], 99, 2);
-        add_filter('woocommerce_product_get_regular_price', [$this, 'get_product_price'], 99, 2);
-        add_filter('woocommerce_product_get_sale_price', [$this, 'get_product_price'], 99, 2);
-        
-        // Variation prices
-        add_filter('woocommerce_product_variation_get_price', [$this, 'get_product_price'], 99, 2);
-        add_filter('woocommerce_product_variation_get_regular_price', [$this, 'get_product_price'], 99, 2);
-        add_filter('woocommerce_product_variation_get_sale_price', [$this, 'get_product_price'], 99, 2);
-        
-        // Price HTML filters
-        add_filter('woocommerce_get_price_html', [$this, 'format_price_html'], 99, 2);
-        
-        // WooCommerce currency filters
-        add_filter('woocommerce_currency', [$this, 'change_woocommerce_currency'], 99);
-        add_filter('woocommerce_currency_symbol', [$this, 'change_currency_symbol'], 99, 2);
-        
         // Tutor LMS - Direct price replacement via output buffer
         add_action('template_redirect', [$this, 'start_global_price_buffer'], 1);
         
         // Add checkout notice
         add_action('woocommerce_before_checkout_form', [$this, 'checkout_notice'], 5);
         
-        // Add currency info to order emails
-        add_action('woocommerce_email_after_order_table', [$this, 'email_currency_info'], 10, 4);
+        // Note: WooCommerce price filters are handled in class-woocommerce.php
+        // to avoid duplicate processing
     }
     
     /**
-     * Start global price buffer
+     * Start global price buffer for Tutor LMS
      */
     public function start_global_price_buffer() {
         if (is_admin()) {
@@ -82,7 +66,7 @@ class SDMC_Frontend_Display {
     }
     
     /**
-     * Replace all prices in the output
+     * Replace all prices in the output (for Tutor LMS and other non-WooCommerce content)
      */
     public function replace_all_prices($content) {
         if (!class_exists('SDMC_Currency')) {
@@ -129,89 +113,6 @@ class SDMC_Frontend_Display {
     }
     
     /**
-     * Change WooCommerce currency
-     */
-    public function change_woocommerce_currency($currency) {
-        if (is_admin() && !wp_doing_ajax()) {
-            return $currency;
-        }
-        
-        return $this->get_current_currency();
-    }
-    
-    /**
-     * Change WooCommerce currency symbol
-     */
-    public function change_currency_symbol($symbol, $currency) {
-        if (is_admin() && !wp_doing_ajax()) {
-            return $symbol;
-        }
-        
-        return SDMC_Currency::get_symbol($currency);
-    }
-    
-    /**
-     * Get product price in current currency
-     */
-    public function get_product_price($price, $product) {
-        // Skip if in admin or no product
-        if (is_admin() && !wp_doing_ajax()) {
-            return $price;
-        }
-        
-        // Skip for base currency
-        $currency = $this->get_current_currency();
-        
-        if ($currency === $this->base_currency) {
-            return $price;
-        }
-        
-        // Get product ID
-        $product_id = $product->get_id();
-        
-        // Check for variation parent
-        if (is_object($product) && method_exists($product, 'is_type') && $product->is_type('variation')) {
-            $product_id = $product->get_parent_id();
-        }
-        
-        // Get currency-specific price
-        $currency_price = get_post_meta($product_id, '_sd_price_' . strtolower($currency), true);
-        
-        // If no price set, return original (fallback to base)
-        if (empty($currency_price) || !is_numeric($currency_price)) {
-            return $price;
-        }
-        
-        return wc_format_decimal($currency_price);
-    }
-    
-    /**
-     * Format price HTML with currency symbol
-     */
-    public function format_price_html($price_html, $product) {
-        // Skip if in admin
-        if (is_admin() && !wp_doing_ajax()) {
-            return $price_html;
-        }
-        
-        $currency = $this->get_current_currency();
-        
-        // Only modify if not base currency
-        if ($currency === $this->base_currency) {
-            return $price_html;
-        }
-        
-        // Get the symbol for current currency
-        $symbol = SDMC_Currency::get_symbol($currency);
-        
-        // Replace the symbol in price HTML
-        $base_symbol = SDMC_Currency::get_symbol($this->base_currency);
-        $price_html = str_replace($base_symbol, $symbol, $price_html);
-        
-        return $price_html;
-    }
-    
-    /**
      * Display checkout notice
      */
     public function checkout_notice() {
@@ -231,20 +132,5 @@ class SDMC_Frontend_Display {
             esc_html($symbol)
         );
         echo '</div>';
-    }
-    
-    /**
-     * Add currency info to emails
-     */
-    public function email_currency_info($order, $sent_to_admin, $plain_text, $email) {
-        $settings = get_option('sdmc_settings', []);
-        $base_currency = $settings['base_currency'] ?? 'ZAR';
-        $symbol = SDMC_Currency::get_symbol($base_currency);
-        
-        if ($plain_text) {
-            echo "\n" . sprintf(__('Payment processed in %s (%s)', 'sd-multicurrency-pro'), $base_currency, $symbol) . "\n";
-        } else {
-            echo '<p><small>' . sprintf(__('Payment processed in %s (%s)', 'sd-multicurrency-pro'), esc_html($base_currency), esc_html($symbol)) . '</small></p>';
-        }
     }
 }

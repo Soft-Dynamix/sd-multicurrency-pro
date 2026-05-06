@@ -75,15 +75,22 @@ class SDMC_Integrations_Woocommerce {
         // Add order meta data for currency conversion tracking
         add_action('woocommerce_checkout_create_order', [$this, 'add_order_meta']);
         
-        // Add meta box for currency prices on products
-        add_action('woocommerce_product_options_pricing', [$this, 'add_currency_price_fields']);
-        add_action('woocommerce_process_product_meta', [$this, 'save_currency_price_fields'], 10, 2);
-        
         // Display conversion info in order admin
         add_action('woocommerce_admin_order_data_after_billing_address', [$this, 'display_order_conversion_info']);
         
         // Add conversion info to order emails
         add_action('woocommerce_email_after_order_table', [$this, 'email_conversion_info'], 10, 4);
+        
+        // Filter product price on frontend to show currency-specific price
+        add_filter('woocommerce_product_get_price', [$this, 'get_product_price'], 99, 2);
+        add_filter('woocommerce_product_get_regular_price', [$this, 'get_product_price'], 99, 2);
+        add_filter('woocommerce_product_get_sale_price', [$this, 'get_product_price'], 99, 2);
+        add_filter('woocommerce_product_variation_get_price', [$this, 'get_product_price'], 99, 2);
+        add_filter('woocommerce_product_variation_get_regular_price', [$this, 'get_product_price'], 99, 2);
+        add_filter('woocommerce_product_variation_get_sale_price', [$this, 'get_product_price'], 99, 2);
+        
+        // Change displayed currency
+        add_filter('woocommerce_currency', [$this, 'change_woocommerce_currency'], 99);
     }
     
     /**
@@ -345,83 +352,64 @@ class SDMC_Integrations_Woocommerce {
     }
     
     /**
-     * Add currency price fields to product edit page
+     * Get product price in current currency for frontend display
      */
-    public function add_currency_price_fields() {
-        global $post;
-        
-        if (!$post) {
-            return;
+    public function get_product_price($price, $product) {
+        // Skip in admin
+        if (is_admin() && !wp_doing_ajax()) {
+            return $price;
         }
         
-        $settings = get_option('sdmc_settings', []);
-        $currencies = $settings['active_currencies'] ?? ['ZAR', 'USD', 'GBP', 'EUR'];
-        
-        echo '<div class="options_group sdmc-currency-prices">';
-        echo '<p class="form-field" style="padding: 10px 20px; background: #f6f7f7; margin: 0;">';
-        echo '<strong>' . esc_html__('Multi-Currency Prices', 'sd-multicurrency-pro') . '</strong>';
-        echo '<span class="description" style="display: block; margin-top: 5px; font-weight: normal;">';
-        echo esc_html__('Enter the price for each currency. These will be converted to ZAR at checkout for Yoco payment.', 'sd-multicurrency-pro');
-        echo '</span>';
-        echo '</p>';
-        
-        foreach ($currencies as $currency) {
-            $field_name = '_sd_price_' . strtolower($currency);
-            $value = get_post_meta($post->ID, $field_name, true);
-            $symbol = class_exists('SDMC_Currency') ? SDMC_Currency::get_symbol($currency) : $currency;
-            $is_base = ($currency === $this->base_currency);
-            
-            woocommerce_wp_text_input([
-                'id' => $field_name,
-                'label' => sprintf(__('Price in %s (%s)', 'sd-multicurrency-pro'), $currency, $symbol),
-                'placeholder' => sprintf(__('Enter price in %s', 'sd-multicurrency-pro'), $currency),
-                'desc_tip' => true,
-                'description' => $is_base 
-                    ? sprintf(__('Base currency price used for %s payment processing.', 'sd-multicurrency-pro'), $this->base_currency)
-                    : sprintf(__('Price in %s. This will be converted to %s at checkout.', 'sd-multicurrency-pro'), $currency, $this->base_currency),
-                'data_type' => 'price',
-                'value' => $value,
-            ]);
+        // Skip if no product
+        if (!$product) {
+            return $price;
         }
         
-        // Show exchange rate info if available
-        if (class_exists('SDMC_Exchange_Rates') && !$is_base) {
-            $rates = SDMC_Exchange_Rates::get_rates();
-            $last_update = SDMC_Exchange_Rates::get_last_update();
-            
-            if ($rates) {
-                echo '<p class="form-field" style="padding: 10px 20px; background: #e7f7ff; margin: 0; border-top: 1px solid #ddd;">';
-                echo '<strong>' . esc_html__('Current Exchange Rates', 'sd-multicurrency-pro') . '</strong><br>';
-                foreach ($rates as $curr => $rate) {
-                    if ($curr !== $this->base_currency) {
-                        $inverse = 1 / $rate;
-                        echo sprintf('1 %s = %.4f ZAR | ', esc_html($curr), $inverse);
-                    }
-                }
-                if ($last_update) {
-                    echo '<br><em style="color: #666;">Updated: ' . esc_html($last_update) . '</em>';
-                }
-                echo '</p>';
-            }
+        // Get current currency
+        if (!class_exists('SDMC_Currency')) {
+            return $price;
         }
         
-        echo '</div>';
+        $current_currency = SDMC_Currency::get_currency();
+        
+        // Skip if base currency
+        if ($current_currency === $this->base_currency) {
+            return $price;
+        }
+        
+        // Get product ID
+        $product_id = $product->get_id();
+        
+        // Check for variation parent
+        if (is_object($product) && method_exists($product, 'is_type') && $product->is_type('variation')) {
+            $product_id = $product->get_parent_id();
+        }
+        
+        // Get currency-specific price
+        $currency_price = get_post_meta($product_id, '_sd_price_' . strtolower($current_currency), true);
+        
+        // Return the currency-specific price if set
+        if (!empty($currency_price) && is_numeric($currency_price)) {
+            return wc_format_decimal($currency_price);
+        }
+        
+        // No currency price set - return original price
+        return $price;
     }
     
     /**
-     * Save currency price fields
+     * Change WooCommerce currency for display
      */
-    public function save_currency_price_fields($post_id, $post) {
-        $settings = get_option('sdmc_settings', []);
-        $currencies = $settings['active_currencies'] ?? ['ZAR', 'USD', 'GBP', 'EUR'];
-        
-        foreach ($currencies as $currency) {
-            $field_name = '_sd_price_' . strtolower($currency);
-            
-            if (isset($_POST[$field_name])) {
-                $value = wc_format_decimal($_POST[$field_name]);
-                update_post_meta($post_id, $field_name, $value);
-            }
+    public function change_woocommerce_currency($currency) {
+        // Skip in admin
+        if (is_admin() && !wp_doing_ajax()) {
+            return $currency;
         }
+        
+        if (!class_exists('SDMC_Currency')) {
+            return $currency;
+        }
+        
+        return SDMC_Currency::get_currency();
     }
 }
