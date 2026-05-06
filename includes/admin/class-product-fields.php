@@ -33,10 +33,8 @@ class SDMC_Admin_ProductFields {
         // Add fields to WooCommerce product pricing section
         add_action('woocommerce_product_options_pricing', [$this, 'add_currency_price_fields']);
         
-        // Save the fields - use multiple hooks for compatibility
-        add_action('woocommerce_process_product_meta', [$this, 'save_currency_price_fields'], 10, 2);
-        add_action('woocommerce_process_product_meta_simple', [$this, 'save_currency_price_fields'], 10, 2);
-        add_action('save_post_product', [$this, 'save_on_product_save'], 10, 2);
+        // Save the fields
+        add_action('woocommerce_process_product_meta', [$this, 'save_currency_price_fields']);
         
         // Add CSS for the fields
         add_action('admin_head', [$this, 'admin_css']);
@@ -48,7 +46,7 @@ class SDMC_Admin_ProductFields {
     public function add_currency_price_fields() {
         global $post;
         
-        if (!$post) {
+        if (!$post || !function_exists('woocommerce_wp_text_input')) {
             return;
         }
         
@@ -80,10 +78,6 @@ class SDMC_Admin_ProductFields {
                     : sprintf(__('Price in %s. Converted to %s at checkout.', 'sd-multicurrency-pro'), $currency, $base_currency),
                 'data_type' => 'price',
                 'value' => $value,
-                'custom_attributes' => [
-                    'step' => '0.01',
-                    'min' => '0'
-                ]
             ]);
         }
         
@@ -91,9 +85,9 @@ class SDMC_Admin_ProductFields {
     }
     
     /**
-     * Save currency price fields - WooCommerce hook
+     * Save currency price fields
      */
-    public function save_currency_price_fields($post_id, $post) {
+    public function save_currency_price_fields($post_id) {
         // Check permissions
         if (!current_user_can('edit_post', $post_id)) {
             return;
@@ -111,7 +105,7 @@ class SDMC_Admin_ProductFields {
             $field_name = '_sd_price_' . strtolower($currency);
             
             if (isset($_POST[$field_name])) {
-                $price = wc_format_decimal($_POST[$field_name]);
+                $price = sanitize_text_field($_POST[$field_name]);
                 
                 if (!empty($price) && is_numeric($price)) {
                     update_post_meta($post_id, $field_name, floatval($price));
@@ -123,45 +117,10 @@ class SDMC_Admin_ProductFields {
     }
     
     /**
-     * Save on product save - fallback hook
-     */
-    public function save_on_product_save($post_id, $post) {
-        // Only run for products
-        if ($post->post_type !== 'product') {
-            return;
-        }
-        
-        // Skip autosave
-        if (defined('DOING_AUTOSAVE') && DOING_AUTOSAVE) {
-            return;
-        }
-        
-        // Check permissions
-        if (!current_user_can('edit_post', $post_id)) {
-            return;
-        }
-        
-        $settings = get_option('sdmc_settings', []);
-        $currencies = $settings['active_currencies'] ?? ['ZAR', 'USD', 'GBP', 'EUR'];
-        
-        foreach ($currencies as $currency) {
-            $field_name = '_sd_price_' . strtolower($currency);
-            
-            if (isset($_POST[$field_name])) {
-                $price = wc_format_decimal($_POST[$field_name]);
-                
-                if (!empty($price) && is_numeric($price)) {
-                    update_post_meta($post_id, $field_name, floatval($price));
-                }
-            }
-        }
-    }
-    
-    /**
      * Admin CSS for styling the fields
      */
     public function admin_css() {
-        $screen = get_current_screen();
+        $screen = function_exists('get_current_screen') ? get_current_screen() : null;
         if ($screen && $screen->post_type === 'product') {
             echo '<style>
                 .sdmc-currency-prices {
