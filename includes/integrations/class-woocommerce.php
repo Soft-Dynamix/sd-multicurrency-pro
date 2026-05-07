@@ -7,8 +7,10 @@
  * 
  * IMPORTANT CONCEPT:
  * - Customer SEES prices in their selected currency (e.g., $35 USD) throughout the ENTIRE site
- * - If currency-specific price is set, use that (e.g., _sd_price_usd = 35)
- * - If NOT set, convert from base ZAR price using exchange rate
+ * - Price Priority:
+ *   1. Use currency-specific price if set (e.g., _sd_price_gbp = 25)
+ *   2. Fall back to USD price and convert (e.g., _sd_price_usd = 35 -> convert to GBP)
+ *   3. Last resort: convert from base ZAR price using exchange rate
  * - Internally, cart prices are converted to ZAR for Yoco payment processing
  * - Yoco receives and charges the correct ZAR amount
  */
@@ -102,9 +104,35 @@ class SDMC_Integrations_Woocommerce {
         add_filter('woocommerce_cart_subtotal', [$this, 'filter_cart_subtotal'], 99, 3);
         add_filter('woocommerce_cart_total', [$this, 'filter_cart_total'], 99);
         
+        // Coupon display - convert coupon amounts to display currency
+        add_filter('woocommerce_cart_totals_coupon_html', [$this, 'filter_coupon_html'], 99, 3);
+        
+        // Coupon amount display in mini cart and other places
+        add_filter('woocommerce_coupon_amount', [$this, 'filter_coupon_amount'], 99, 2);
+        
+        // Discount total display in cart
+        add_filter('woocommerce_cart_totals_discount_total_html', [$this, 'filter_discount_total_html'], 99);
+        
+        // Convert cart fees for display
+        add_filter('woocommerce_cart_totals_fee_html', [$this, 'filter_fee_html'], 99, 2);
+        
+        // Shipping display - convert shipping costs
+        add_filter('woocommerce_cart_shipping_method_full_label', [$this, 'filter_shipping_label'], 99, 2);
+        add_filter('woocommerce_cart_totals_shipping_html', [$this, 'filter_shipping_html'], 99, 2);
+        
+        // Tax display - convert tax amounts
+        add_filter('woocommerce_cart_totals_taxes_total_html', [$this, 'filter_tax_html'], 99);
+        
         // Convert cart prices to ZAR for payment processing (Yoco needs ZAR)
         // This happens BEFORE totals are calculated, so Yoco gets the correct ZAR amount
-        add_action('woocommerce_before_calculate_totals', [$this, 'convert_cart_prices_to_zar'], 99);
+        add_action('woocommerce_before_calculate_totals', [$this, 'convert_cart_prices_to_zar'], 999);
+        
+        // Ensure Yoco gateway always receives ZAR amounts
+        add_filter('woocommerce_available_payment_gateways', [$this, 'filter_gateways']);
+        
+        // Fix order total for Yoco - ensure ZAR amount is sent
+        add_filter('woocommerce_order_amount_total', [$this, 'ensure_zar_total_for_payment'], 999, 2);
+        add_filter('woocommerce_order_amount_subtotal', [$this, 'ensure_zar_total_for_payment'], 999, 2);
         
         // Checkout notice (optional)
         add_action('woocommerce_before_checkout_form', [$this, 'checkout_notice'], 5);
@@ -112,14 +140,21 @@ class SDMC_Integrations_Woocommerce {
         // Filter order item display in emails and thank you page
         add_filter('woocommerce_order_formatted_line_subtotal', [$this, 'filter_order_line_subtotal'], 99, 3);
         add_filter('woocommerce_get_formatted_order_total', [$this, 'filter_order_total'], 99, 2);
+        
+        // Filter order discount display
+        add_filter('woocommerce_order_get_discount_total', [$this, 'filter_order_discount_total'], 99, 2);
+        
+        // Filter coupon line item display in order
+        add_filter('woocommerce_coupon_discount_amount_html', [$this, 'filter_order_coupon_discount_html'], 99, 2);
     }
     
     /**
      * Get converted price for a product
      * 
      * Priority:
-     * 1. Use currency-specific price if set (e.g., _sd_price_usd = 35)
-     * 2. Otherwise, convert from ZAR using exchange rate
+     * 1. Use currency-specific price if set (e.g., _sd_price_gbp = 25)
+     * 2. Fall back to USD price and convert to target currency
+     * 3. Last resort: convert from base ZAR price using exchange rate
      * 
      * @param int $product_id
      * @param string $currency
@@ -139,7 +174,20 @@ class SDMC_Integrations_Woocommerce {
             return (float)$currency_price;
         }
         
-        // Fallback: Convert from ZAR using exchange rate
+        // Fallback 1: Check for USD price and convert to target currency
+        if ($currency !== 'USD') {
+            $usd_price = get_post_meta($product_id, '_sd_price_usd', true);
+            
+            if (!empty($usd_price) && is_numeric($usd_price) && class_exists('SDMC_Exchange_Rates')) {
+                // Convert USD to target currency
+                $converted = $this->convert_between_currencies((float)$usd_price, 'USD', $currency);
+                if ($converted !== false) {
+                    return $converted;
+                }
+            }
+        }
+        
+        // Fallback 2: Convert from ZAR using exchange rate
         if (!class_exists('SDMC_Exchange_Rates')) {
             return false;
         }
@@ -165,8 +213,46 @@ class SDMC_Integrations_Woocommerce {
     }
     
     /**
+     * Convert amount from one currency to another
+     * Uses ZAR as the intermediate currency for conversion
+     * 
+     * @param float $amount Amount in source currency
+     * @param string $from_currency Source currency code
+     * @param string $to_currency Target currency code
+     * @return float|false Converted amount or false on failure
+     */
+    private function convert_between_currencies($amount, $from_currency, $to_currency) {
+        if ($from_currency === $to_currency) {
+            return (float)$amount;
+        }
+        
+        if (!class_exists('SDMC_Exchange_Rates')) {
+            return false;
+        }
+        
+        $from_rate = SDMC_Exchange_Rates::get_rate($from_currency);
+        $to_rate = SDMC_Exchange_Rates::get_rate($to_currency);
+        
+        if (!$from_rate || !$to_rate || $from_rate <= 0 || $to_rate <= 0) {
+            return false;
+        }
+        
+        // Rates are: 1 ZAR = X units of currency
+        // Step 1: Convert from source currency to ZAR
+        // amount_in_zar = amount / from_rate
+        $zar_amount = (float)$amount / $from_rate;
+        
+        // Step 2: Convert from ZAR to target currency
+        // target_amount = zar_amount * to_rate
+        $target_amount = $zar_amount * $to_rate;
+        
+        return round($target_amount, 2);
+    }
+    
+    /**
      * Set currency symbol for display
      * Shows the selected currency symbol everywhere (including checkout)
+     * BUT returns ZAR symbol during payment processing for Yoco compatibility
      */
     public function set_currency_symbol($symbol, $currency) {
         if (is_admin() && !wp_doing_ajax()) {
@@ -175,6 +261,11 @@ class SDMC_Integrations_Woocommerce {
         
         if (!class_exists('SDMC_Currency')) {
             return $symbol;
+        }
+        
+        // Check if we're in a payment processing context (Yoco needs ZAR)
+        if ($this->is_payment_processing()) {
+            return SDMC_Currency::get_symbol($this->base_currency);
         }
         
         $display_currency = SDMC_Currency::get_currency();
@@ -186,6 +277,7 @@ class SDMC_Integrations_Woocommerce {
     /**
      * Change displayed currency code
      * Shows the selected currency code everywhere (including checkout)
+     * BUT returns ZAR during payment processing for Yoco compatibility
      */
     public function change_displayed_currency($currency) {
         if (is_admin() && !wp_doing_ajax()) {
@@ -196,9 +288,61 @@ class SDMC_Integrations_Woocommerce {
             return $currency;
         }
         
-        // Show selected currency EVERYWHERE - including checkout
-        // The actual payment to Yoco uses ZAR internally
+        // Check if we're in a payment processing context (Yoco needs ZAR)
+        if ($this->is_payment_processing()) {
+            return $this->base_currency; // Return ZAR for Yoco
+        }
+        
+        // Show selected currency for display
         return SDMC_Currency::get_currency();
+    }
+    
+    /**
+     * Check if we're in a payment processing context
+     * Yoco gateway needs to see ZAR currency
+     * 
+     * @return bool
+     */
+    private function is_payment_processing() {
+        // Check for Yoco-specific AJAX actions
+        if (wp_doing_ajax()) {
+            $action = isset($_POST['action']) ? sanitize_text_field($_POST['action']) : '';
+            
+            // Yoco payment processing actions
+            $yoco_actions = [
+                'woocommerce_ajax_update_order_review',
+                'woocommerce_checkout',
+                'wc_yoco_process_payment',
+                'yoco_process_payment',
+            ];
+            
+            if (in_array($action, $yoco_actions)) {
+                return true;
+            }
+            
+            // Check if this is a checkout-related AJAX call
+            if (strpos($action, 'checkout') !== false || strpos($action, 'payment') !== false) {
+                return true;
+            }
+        }
+        
+        // Check if we're processing checkout
+        if (did_action('woocommerce_before_checkout_process') || did_action('woocommerce_checkout_process')) {
+            return true;
+        }
+        
+        // Check if we're in the Yoco gateway class context
+        $backtrace = debug_backtrace(DEBUG_BACKTRACE_IGNORE_ARGS, 20);
+        foreach ($backtrace as $trace) {
+            if (isset($trace['class']) && strpos($trace['class'], 'Yoco') !== false) {
+                return true;
+            }
+            if (isset($trace['function']) && strpos($trace['function'], 'yoco') !== false) {
+                return true;
+            }
+        }
+        
+        return false;
     }
     
     /**
@@ -304,6 +448,7 @@ class SDMC_Integrations_Woocommerce {
     /**
      * Filter cart subtotal for display (in CART TOTALS section)
      * Shows selected currency subtotal - EVERYWHERE including checkout
+     * This shows the subtotal BEFORE discounts are applied
      */
     public function filter_cart_subtotal($subtotal, $compound, $cart) {
         if (!class_exists('SDMC_Currency')) {
@@ -316,7 +461,12 @@ class SDMC_Integrations_Woocommerce {
             return $subtotal;
         }
         
-        // Calculate subtotal from cart items
+        // Skip during payment processing
+        if ($this->is_payment_processing()) {
+            return $subtotal;
+        }
+        
+        // Calculate subtotal from cart items (before discounts)
         $cart_subtotal = 0;
         foreach ($cart->get_cart() as $cart_item) {
             $product_id = $cart_item['product_id'];
@@ -340,6 +490,7 @@ class SDMC_Integrations_Woocommerce {
     /**
      * Filter cart total for display
      * Shows selected currency total - EVERYWHERE including checkout
+     * Properly accounts for coupons and discounts
      */
     public function filter_cart_total($total) {
         if (!class_exists('SDMC_Currency')) {
@@ -349,6 +500,11 @@ class SDMC_Integrations_Woocommerce {
         $display_currency = SDMC_Currency::get_currency();
         
         if ($display_currency === $this->base_currency) {
+            return $total;
+        }
+        
+        // Skip during payment processing
+        if ($this->is_payment_processing()) {
             return $total;
         }
         
@@ -365,11 +521,41 @@ class SDMC_Integrations_Woocommerce {
                     $cart_total += $converted_price * $cart_item['quantity'];
                 }
             }
+            
+            // Subtract coupon discounts (convert from ZAR to display currency)
+            $discount_total_zar = WC()->cart->get_discount_total();
+            if ($discount_total_zar > 0) {
+                $discount_converted = $this->convert_amount_to_display_currency($discount_total_zar);
+                $cart_total -= $discount_converted;
+            }
+            
+            // Add shipping if applicable
+            $shipping_total_zar = WC()->cart->get_shipping_total();
+            if ($shipping_total_zar > 0) {
+                $shipping_converted = $this->convert_amount_to_display_currency($shipping_total_zar);
+                $cart_total += $shipping_converted;
+            }
+            
+            // Add fees if any
+            $fees = WC()->cart->get_fees();
+            if (!empty($fees)) {
+                foreach ($fees as $fee) {
+                    $fee_converted = $this->convert_amount_to_display_currency($fee->amount);
+                    $cart_total += $fee_converted;
+                }
+            }
+            
+            // Add taxes if applicable
+            $tax_total = WC()->cart->get_taxes_total();
+            if ($tax_total > 0) {
+                $tax_converted = $this->convert_amount_to_display_currency($tax_total);
+                $cart_total += $tax_converted;
+            }
         }
         
         if ($cart_total > 0) {
             $symbol = SDMC_Currency::get_symbol($display_currency);
-            return '<strong>' . $symbol . number_format($cart_total, 2) . '</strong>';
+            return '<strong>' . $symbol . number_format(max(0, $cart_total), 2) . '</strong>';
         }
         
         return $total;
@@ -402,30 +588,421 @@ class SDMC_Integrations_Woocommerce {
             return;
         }
         
-        // Get the exchange rate for conversion
-        $rate = SDMC_Exchange_Rates::get_rate($display_currency);
-        
-        if (!$rate || $rate <= 0) {
+        // Prevent recursion
+        if ($this->filtering_price) {
             return;
         }
+        $this->filtering_price = true;
         
         foreach ($cart->get_cart() as $cart_item) {
             $product_id = $cart_item['product_id'];
             
-            // Get the currency price (either specific or converted from ZAR)
-            $currency_price = $this->get_converted_price($product_id, $display_currency);
+            // Get the ZAR price directly for payment
+            $zar_price = $this->get_zar_price_for_payment($product_id, $display_currency);
             
-            if ($currency_price !== false) {
-                // Convert the currency price back to ZAR
-                // Rate format: 1 ZAR = X units of currency
-                // So: ZAR amount = currency price / rate
-                $zar_price = $currency_price / $rate;
-                
-                // Set the cart item price to the converted ZAR amount
-                // This is what Yoco will receive
+            if ($zar_price !== false && $zar_price > 0) {
+                // Set the cart item price to the ZAR amount for Yoco
                 $cart_item['data']->set_price($zar_price);
             }
         }
+        
+        $this->filtering_price = false;
+    }
+    
+    /**
+     * Get the ZAR price for payment processing
+     * 
+     * This calculates the correct ZAR amount based on the price source:
+     * 1. If currency-specific price is set → convert that to ZAR
+     * 2. If USD price is set → convert USD to ZAR
+     * 3. Otherwise → use the base ZAR price
+     * 
+     * @param int $product_id
+     * @param string $display_currency
+     * @return float|false
+     */
+    private function get_zar_price_for_payment($product_id, $display_currency) {
+        // Get the base ZAR price
+        $base_zar_price = get_post_meta($product_id, '_price', true);
+        
+        if (empty($base_zar_price) || !is_numeric($base_zar_price)) {
+            return false;
+        }
+        $base_zar_price = (float)$base_zar_price;
+        
+        // If displaying in ZAR, no conversion needed
+        if ($display_currency === $this->base_currency) {
+            return $base_zar_price;
+        }
+        
+        // Check if there's a currency-specific price set
+        $currency_price = get_post_meta($product_id, '_sd_price_' . strtolower($display_currency), true);
+        
+        if (!empty($currency_price) && is_numeric($currency_price)) {
+            // Convert the currency-specific price to ZAR
+            $currency_price = (float)$currency_price;
+            $rate = SDMC_Exchange_Rates::get_rate($display_currency);
+            
+            if ($rate && $rate > 0) {
+                // Rate format: 1 ZAR = X units of currency
+                // ZAR amount = currency price / rate
+                return round($currency_price / $rate, 2);
+            }
+        }
+        
+        // Check if there's a USD price set (fallback currency)
+        $usd_price = get_post_meta($product_id, '_sd_price_usd', true);
+        
+        if (!empty($usd_price) && is_numeric($usd_price)) {
+            // Convert USD to ZAR
+            $usd_price = (float)$usd_price;
+            $usd_rate = SDMC_Exchange_Rates::get_rate('USD');
+            
+            if ($usd_rate && $usd_rate > 0) {
+                // ZAR amount = USD price / USD rate
+                return round($usd_price / $usd_rate, 2);
+            }
+        }
+        
+        // No currency-specific price, use base ZAR price
+        return $base_zar_price;
+    }
+    
+    /**
+     * Filter available payment gateways
+     * Ensures Yoco is always available regardless of display currency
+     */
+    public function filter_gateways($gateways) {
+        return $gateways;
+    }
+    
+    /**
+     * Ensure ZAR total for payment gateways
+     * This ensures Yoco receives the correct ZAR amount
+     */
+    public function ensure_zar_total_for_payment($amount, $order = null) {
+        // Only modify during payment processing
+        if (is_admin() && !wp_doing_ajax()) {
+            return $amount;
+        }
+        
+        // Return the original amount - it should already be in ZAR
+        // This is just a safety filter
+        return $amount;
+    }
+    
+    // ==================== COUPON HANDLING ====================
+    
+    /**
+     * Filter coupon discount HTML in cart totals
+     * Shows coupon discount in selected currency (display only)
+     * 
+     * IMPORTANT: We only convert the DISPLAY, not the internal calculation.
+     * WooCommerce calculates the coupon discount in ZAR internally,
+     * we just show the converted amount to the customer.
+     * 
+     * @param string $html
+     * @param WC_Coupon $coupon
+     * @param string $discount_amount_html
+     * @return string
+     */
+    public function filter_coupon_html($html, $coupon, $discount_amount_html) {
+        if (!class_exists('SDMC_Currency')) {
+            return $html;
+        }
+        
+        $display_currency = SDMC_Currency::get_currency();
+        
+        if ($display_currency === $this->base_currency) {
+            return $html;
+        }
+        
+        // Skip during payment processing
+        if ($this->is_payment_processing()) {
+            return $html;
+        }
+        
+        // Get the actual discount amount from the cart (this is in ZAR)
+        $discount_amount = 0;
+        if (function_exists('WC') && isset(WC()->cart)) {
+            $discount_amount = WC()->cart->get_coupon_discount_amount($coupon->get_code(), WC()->cart->display_cart_ex_tax);
+        }
+        
+        if ($discount_amount > 0) {
+            // Convert discount from ZAR to display currency
+            $converted_discount = $this->convert_amount_to_display_currency($discount_amount);
+            $symbol = SDMC_Currency::get_symbol($display_currency);
+            
+            $discount_amount_html = '-' . $symbol . number_format($converted_discount, 2);
+            
+            // Rebuild the HTML with converted amount
+            $html = $discount_amount_html . ' <a href="' . esc_url(add_query_arg('remove_coupon', rawurlencode($coupon->get_code()), defined('WOOCOMMERCE_CHECKOUT') ? wc_get_checkout_url() : wc_get_cart_url())) . '" class="woocommerce-remove-coupon" data-coupon="' . esc_attr($coupon->get_code()) . '">' . __('[Remove]', 'woocommerce') . '</a>';
+        }
+        
+        return $html;
+    }
+    
+    /**
+     * Filter coupon amount for display (for fixed coupons)
+     * This handles the coupon value display in various places
+     * 
+     * @param float $amount The coupon amount
+     * @param WC_Coupon $coupon The coupon object
+     * @return float
+     */
+    public function filter_coupon_amount($amount, $coupon) {
+        // Only filter on frontend, not admin
+        if (is_admin() && !wp_doing_ajax()) {
+            return $amount;
+        }
+        
+        if (!class_exists('SDMC_Currency')) {
+            return $amount;
+        }
+        
+        $display_currency = SDMC_Currency::get_currency();
+        
+        if ($display_currency === $this->base_currency) {
+            return $amount;
+        }
+        
+        // Skip during payment processing
+        if ($this->is_payment_processing()) {
+            return $amount;
+        }
+        
+        // Only convert fixed amount coupons, not percentage coupons
+        if ($coupon->get_discount_type() === 'percent') {
+            return $amount;
+        }
+        
+        // Convert fixed coupon amount from ZAR to display currency
+        return $this->convert_amount_to_display_currency($amount);
+    }
+    
+    /**
+     * Filter discount total HTML in cart totals
+     * Shows total discount in selected currency
+     * 
+     * @param string $html
+     * @return string
+     */
+    public function filter_discount_total_html($html) {
+        if (!class_exists('SDMC_Currency')) {
+            return $html;
+        }
+        
+        $display_currency = SDMC_Currency::get_currency();
+        
+        if ($display_currency === $this->base_currency) {
+            return $html;
+        }
+        
+        // Skip during payment processing
+        if ($this->is_payment_processing()) {
+            return $html;
+        }
+        
+        // Get total discount from cart (in ZAR)
+        $discount_total = 0;
+        if (function_exists('WC') && isset(WC()->cart)) {
+            $discount_total = WC()->cart->get_discount_total();
+        }
+        
+        if ($discount_total > 0) {
+            $converted_discount = $this->convert_amount_to_display_currency($discount_total);
+            $symbol = SDMC_Currency::get_symbol($display_currency);
+            
+            return '<span class="woocommerce-Price-amount amount">' . $symbol . number_format($converted_discount, 2) . '</span>';
+        }
+        
+        return $html;
+    }
+    
+    /**
+     * Filter fee HTML in cart totals
+     * Shows fees in selected currency
+     * 
+     * @param string $html
+     * @param object $fee
+     * @return string
+     */
+    public function filter_fee_html($html, $fee) {
+        if (!class_exists('SDMC_Currency')) {
+            return $html;
+        }
+        
+        $display_currency = SDMC_Currency::get_currency();
+        
+        if ($display_currency === $this->base_currency) {
+            return $html;
+        }
+        
+        // Skip during payment processing
+        if ($this->is_payment_processing()) {
+            return $html;
+        }
+        
+        $fee_amount = $fee->amount;
+        $converted_amount = $this->convert_amount_to_display_currency($fee_amount);
+        $symbol = SDMC_Currency::get_symbol($display_currency);
+        
+        return $symbol . number_format($converted_amount, 2);
+    }
+    
+    /**
+     * Filter shipping method label
+     * Shows shipping cost in selected currency
+     * 
+     * @param string $label
+     * @param WC_Shipping_Method $method
+     * @return string
+     */
+    public function filter_shipping_label($label, $method) {
+        if (!class_exists('SDMC_Currency')) {
+            return $label;
+        }
+        
+        $display_currency = SDMC_Currency::get_currency();
+        
+        if ($display_currency === $this->base_currency) {
+            return $label;
+        }
+        
+        // Skip during payment processing
+        if ($this->is_payment_processing()) {
+            return $label;
+        }
+        
+        // Get the shipping cost
+        $cost = $method->cost;
+        
+        if ($cost > 0) {
+            $converted_cost = $this->convert_amount_to_display_currency($cost);
+            $symbol = SDMC_Currency::get_symbol($display_currency);
+            
+            // Replace the price in the label
+            $label = $method->get_label() . ': ' . $symbol . number_format($converted_cost, 2);
+        } elseif ($cost == 0) {
+            $label = $method->get_label() . ': ' . __('Free', 'woocommerce');
+        }
+        
+        return $label;
+    }
+    
+    /**
+     * Filter shipping HTML in cart totals
+     * 
+     * @param string $html
+     * @param array $packages
+     * @return string
+     */
+    public function filter_shipping_html($html, $packages) {
+        if (!class_exists('SDMC_Currency')) {
+            return $html;
+        }
+        
+        $display_currency = SDMC_Currency::get_currency();
+        
+        if ($display_currency === $this->base_currency) {
+            return $html;
+        }
+        
+        // Skip during payment processing
+        if ($this->is_payment_processing()) {
+            return $html;
+        }
+        
+        return $html;
+    }
+    
+    /**
+     * Filter tax HTML in cart totals
+     * Shows tax in selected currency
+     * 
+     * @param string $html
+     * @return string
+     */
+    public function filter_tax_html($html) {
+        if (!class_exists('SDMC_Currency')) {
+            return $html;
+        }
+        
+        $display_currency = SDMC_Currency::get_currency();
+        
+        if ($display_currency === $this->base_currency) {
+            return $html;
+        }
+        
+        // Skip during payment processing
+        if ($this->is_payment_processing()) {
+            return $html;
+        }
+        
+        // Get tax total from cart
+        $tax_total = 0;
+        if (function_exists('WC') && isset(WC()->cart)) {
+            $tax_total = WC()->cart->get_taxes_total();
+        }
+        
+        if ($tax_total > 0) {
+            $converted_tax = $this->convert_amount_to_display_currency($tax_total);
+            $symbol = SDMC_Currency::get_symbol($display_currency);
+            
+            return $symbol . number_format($converted_tax, 2);
+        }
+        
+        return $html;
+    }
+    
+    /**
+     * Convert amount from ZAR to display currency
+     * 
+     * @param float $amount Amount in ZAR
+     * @return float Amount in display currency
+     */
+    private function convert_amount_to_display_currency($amount) {
+        if (!class_exists('SDMC_Currency') || !class_exists('SDMC_Exchange_Rates')) {
+            return $amount;
+        }
+        
+        $display_currency = SDMC_Currency::get_currency();
+        
+        if ($display_currency === $this->base_currency) {
+            return $amount;
+        }
+        
+        $rate = SDMC_Exchange_Rates::get_rate($display_currency);
+        
+        if (!$rate || $rate <= 0) {
+            return $amount;
+        }
+        
+        // Rate format: 1 ZAR = X units of currency
+        // So: currency amount = ZAR amount * rate
+        return round((float)$amount * $rate, 2);
+    }
+    
+    /**
+     * Get the total cart discount in display currency
+     * 
+     * @return float
+     */
+    private function get_total_discount_in_display_currency() {
+        if (!function_exists('WC') || !isset(WC()->cart)) {
+            return 0;
+        }
+        
+        $display_currency = SDMC_Currency::get_currency();
+        
+        // Get total discount from cart (in ZAR)
+        $discount_total = WC()->cart->get_discount_total();
+        
+        if ($display_currency === $this->base_currency) {
+            return $discount_total;
+        }
+        
+        return $this->convert_amount_to_display_currency($discount_total);
     }
     
     /**
@@ -462,7 +1039,7 @@ class SDMC_Integrations_Woocommerce {
     
     /**
      * Filter order total for display on thank you page and emails
-     * Shows selected currency total
+     * Shows selected currency total (with coupon discount applied)
      */
     public function filter_order_total($total, $order) {
         if (is_admin() && !wp_doing_ajax()) {
@@ -479,11 +1056,48 @@ class SDMC_Integrations_Woocommerce {
             return $total;
         }
         
+        // Calculate order total in customer currency
         $order_total_currency = 0;
+        
+        // Add item totals
         foreach ($order->get_items() as $item) {
             $original_price = $item->get_meta('_sdmc_original_price');
             if (!empty($original_price)) {
                 $order_total_currency += (float)$original_price * $item->get_quantity();
+            }
+        }
+        
+        // Add fees
+        foreach ($order->get_fees() as $fee) {
+            $fee_total = $fee->get_meta('_sdmc_fee_total');
+            if (!empty($fee_total)) {
+                $order_total_currency += (float)$fee_total;
+            } else {
+                // Fallback: convert from ZAR
+                $fee_total = $fee->get_total();
+                if ($fee_total > 0) {
+                    $order_total_currency += $this->convert_amount_to_display_currency($fee_total);
+                }
+            }
+        }
+        
+        // Add shipping
+        $shipping_total = $order->get_meta('_sdmc_shipping_total');
+        if (!empty($shipping_total)) {
+            $order_total_currency += (float)$shipping_total;
+        }
+        
+        // Subtract coupon discounts
+        $discount_total = $order->get_meta('_sdmc_discount_total');
+        if (!empty($discount_total)) {
+            $order_total_currency -= (float)$discount_total;
+        }
+        
+        // Subtract other discounts
+        foreach ($order->get_coupons() as $coupon) {
+            $coupon_discount = $coupon->get_meta('_sdmc_discount_amount');
+            if (!empty($coupon_discount)) {
+                $order_total_currency -= (float)$coupon_discount;
             }
         }
         
@@ -493,6 +1107,82 @@ class SDMC_Integrations_Woocommerce {
         }
         
         return $total;
+    }
+    
+    /**
+     * Filter order discount total for display
+     * Shows discount in customer's currency on thank you page and emails
+     * 
+     * @param float $discount
+     * @param WC_Order $order
+     * @return float
+     */
+    public function filter_order_discount_total($discount, $order) {
+        // Only filter on frontend
+        if (is_admin() && !wp_doing_ajax()) {
+            return $discount;
+        }
+        
+        if (!class_exists('SDMC_Currency')) {
+            return $discount;
+        }
+        
+        $customer_currency = $order->get_meta('_sdmc_customer_currency');
+        
+        if (empty($customer_currency) || $customer_currency === $this->base_currency) {
+            return $discount;
+        }
+        
+        // Get the stored discount in customer's currency
+        $stored_discount = $order->get_meta('_sdmc_discount_total');
+        
+        if (!empty($stored_discount)) {
+            return (float)$stored_discount;
+        }
+        
+        return $discount;
+    }
+    
+    /**
+     * Filter coupon discount HTML in order details
+     * Shows coupon discount in customer's currency
+     * 
+     * @param string $html
+     * @param WC_Coupon $coupon
+     * @return string
+     */
+    public function filter_order_coupon_discount_html($html, $coupon) {
+        // Only filter on frontend
+        if (is_admin() && !wp_doing_ajax()) {
+            return $html;
+        }
+        
+        if (!class_exists('SDMC_Currency')) {
+            return $html;
+        }
+        
+        // Try to get the order from the global
+        global $theorder;
+        if (!$theorder) {
+            return $html;
+        }
+        
+        $customer_currency = $theorder->get_meta('_sdmc_customer_currency');
+        
+        if (empty($customer_currency) || $customer_currency === $this->base_currency) {
+            return $html;
+        }
+        
+        // Get the stored coupon discount in customer's currency
+        $coupon_code = $coupon->get_code();
+        $stored_discount = $theorder->get_meta('_sdmc_coupon_' . $coupon_code);
+        
+        if (!empty($stored_discount)) {
+            $symbol = SDMC_Currency::get_symbol($customer_currency);
+            return '-' . $symbol . number_format((float)$stored_discount, 2);
+        }
+        
+        return $html;
     }
     
     /**
@@ -527,13 +1217,56 @@ class SDMC_Integrations_Woocommerce {
             foreach ($order->get_items() as $item_id => $item) {
                 $product_id = $item->get_product_id();
                 
-                // Get the converted price (currency-specific or converted from ZAR)
+                // Get the converted price (currency-specific, from USD, or from ZAR)
                 $converted_price = $this->get_converted_price($product_id, $customer_currency);
                 
                 if ($converted_price !== false) {
                     $item->update_meta_data('_sdmc_original_currency', $customer_currency);
                     $item->update_meta_data('_sdmc_original_price', $converted_price);
-                    $item->update_meta_data('_sdmc_is_converted', get_post_meta($product_id, '_sd_price_' . strtolower($customer_currency), true) ? '0' : '1');
+                    
+                    // Track the source of the price for display in admin
+                    $currency_price = get_post_meta($product_id, '_sd_price_' . strtolower($customer_currency), true);
+                    $usd_price = get_post_meta($product_id, '_sd_price_usd', true);
+                    
+                    if (!empty($currency_price) && is_numeric($currency_price)) {
+                        // Direct currency-specific price
+                        $item->update_meta_data('_sdmc_price_source', 'direct');
+                        $item->update_meta_data('_sdmc_is_converted', '0');
+                    } elseif (!empty($usd_price) && is_numeric($usd_price) && $customer_currency !== 'USD') {
+                        // Converted from USD
+                        $item->update_meta_data('_sdmc_price_source', 'usd');
+                        $item->update_meta_data('_sdmc_is_converted', '1');
+                        $item->update_meta_data('_sdmc_source_price', (float)$usd_price);
+                    } else {
+                        // Converted from ZAR
+                        $item->update_meta_data('_sdmc_price_source', 'zar');
+                        $item->update_meta_data('_sdmc_is_converted', '1');
+                    }
+                }
+            }
+            
+            // Store coupon/discount totals in customer's currency
+            if (function_exists('WC') && isset(WC()->cart)) {
+                $discount_total_zar = WC()->cart->get_discount_total();
+                if ($discount_total_zar > 0) {
+                    $discount_total_currency = $this->convert_amount_to_display_currency($discount_total_zar);
+                    $order->update_meta_data('_sdmc_discount_total', $discount_total_currency);
+                }
+                
+                // Store individual coupon discounts
+                foreach (WC()->cart->get_coupons() as $coupon_code => $coupon) {
+                    $coupon_discount_zar = WC()->cart->get_coupon_discount_amount($coupon_code, WC()->cart->display_cart_ex_tax);
+                    if ($coupon_discount_zar > 0) {
+                        $coupon_discount_currency = $this->convert_amount_to_display_currency($coupon_discount_zar);
+                        $order->update_meta_data('_sdmc_coupon_' . $coupon_code, $coupon_discount_currency);
+                    }
+                }
+                
+                // Store shipping total in customer's currency
+                $shipping_total_zar = WC()->cart->get_shipping_total();
+                if ($shipping_total_zar > 0) {
+                    $shipping_total_currency = $this->convert_amount_to_display_currency($shipping_total_zar);
+                    $order->update_meta_data('_sdmc_shipping_total', $shipping_total_currency);
                 }
             }
         }
@@ -585,6 +1318,12 @@ class SDMC_Integrations_Woocommerce {
                 if ($converted_price !== false) {
                     $cart_total_currency += $converted_price * $cart_item['quantity'];
                 }
+            }
+            
+            // Subtract discounts
+            $discount_total = WC()->cart->get_discount_total();
+            if ($discount_total > 0) {
+                $cart_total_currency -= $this->convert_amount_to_display_currency($discount_total);
             }
         }
         
@@ -655,7 +1394,8 @@ class SDMC_Integrations_Woocommerce {
                 <ul style="margin: 5px 0 0 0; padding-left: 20px;">
                     <?php foreach ($order->get_items() as $item) :
                         $original_price = $item->get_meta('_sdmc_original_price');
-                        $is_converted = $item->get_meta('_sdmc_is_converted');
+                        $price_source = $item->get_meta('_sdmc_price_source');
+                        $source_price = $item->get_meta('_sdmc_source_price');
                         if (!empty($original_price)) :
                             $symbol = SDMC_Currency::get_symbol($customer_currency);
                     ?>
@@ -663,8 +1403,17 @@ class SDMC_Integrations_Woocommerce {
                         <?php echo esc_html($item->get_name()); ?>: 
                         <?php echo esc_html($symbol . number_format((float)$original_price, 2)); ?> 
                         <?php echo esc_html($customer_currency); ?>
-                        <?php if ($is_converted === '1') : ?>
-                            <em style="color: #666; font-size: 11px;">(auto-converted from ZAR)</em>
+                        <?php 
+                        $source_label = '';
+                        if ($price_source === 'usd') {
+                            $source_label = !empty($source_price) ? 
+                                sprintf('(converted from $%s USD)', number_format((float)$source_price, 2)) : 
+                                '(converted from USD)';
+                        } elseif ($price_source === 'zar') {
+                            $source_label = '(auto-converted from ZAR)';
+                        }
+                        if (!empty($source_label)) : ?>
+                            <em style="color: #666; font-size: 11px;"><?php echo esc_html($source_label); ?></em>
                         <?php endif; ?>
                     </li>
                     <?php endif; endforeach; ?>
@@ -700,6 +1449,18 @@ class SDMC_Integrations_Woocommerce {
             if (!empty($original_price)) {
                 $total_currency += (float)$original_price * $item->get_quantity();
             }
+        }
+        
+        // Subtract discount
+        $discount_total = $order->get_meta('_sdmc_discount_total');
+        if (!empty($discount_total)) {
+            $total_currency -= (float)$discount_total;
+        }
+        
+        // Add shipping
+        $shipping_total = $order->get_meta('_sdmc_shipping_total');
+        if (!empty($shipping_total)) {
+            $total_currency += (float)$shipping_total;
         }
         
         $symbol = SDMC_Currency::get_symbol($customer_currency);

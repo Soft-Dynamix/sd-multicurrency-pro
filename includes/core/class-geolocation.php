@@ -111,17 +111,32 @@ class SDMC_Geolocation {
         // Get detected country
         $country = $this->get_country();
         
-        if ($country) {
+        if ($country && class_exists('SDMC_Currency')) {
             $currency = $this->get_currency_for_country($country);
+            $active_currencies = SDMC_Currency::get_active_currencies();
             
-            if ($currency && class_exists('SDMC_Currency')) {
-                // Check if this currency is active
-                $active_currencies = SDMC_Currency::get_active_currencies();
-                
-                if (in_array($currency, $active_currencies)) {
-                    SDMC_Currency::set_currency($currency);
+            // Try the mapped currency first
+            if ($currency && in_array($currency, $active_currencies)) {
+                SDMC_Currency::set_currency($currency);
+                return;
+            }
+            
+            // Fallback 1: Use USD if the mapped currency is not active
+            // This handles cases like Canada -> CAD not active -> use USD
+            if (in_array('USD', $active_currencies)) {
+                SDMC_Currency::set_currency('USD');
+                return;
+            }
+            
+            // Fallback 2: Use the first non-ZAR active currency
+            foreach ($active_currencies as $active_currency) {
+                if ($active_currency !== 'ZAR') {
+                    SDMC_Currency::set_currency($active_currency);
+                    return;
                 }
             }
+            
+            // Last resort: ZAR will be used by default (no cookie set)
         }
     }
     

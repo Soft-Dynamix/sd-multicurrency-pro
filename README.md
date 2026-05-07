@@ -2,7 +2,7 @@
 
 A powerful WordPress plugin for multi-currency management on WooCommerce linked to Tutor LMS.
 
-![Version](https://img.shields.io/badge/version-1.0.0-blue.svg)
+![Version](https://img.shields.io/badge/version-1.3.0-blue.svg)
 ![WordPress](https://img.shields.io/badge/WordPress-6.0%2B-green.svg)
 ![WooCommerce](https://img.shields.io/badge/WooCommerce-7.0%2B-purple.svg)
 ![License](https://img.shields.io/badge/license-GPL%20v2.0%2B-orange.svg)
@@ -14,8 +14,11 @@ SD MultiCurrency Pro enables you to sell WooCommerce products and Tutor LMS cour
 ### Key Features
 
 - **Per-Currency Fixed Pricing**: Set individual prices per product/course for each currency (e.g., R800 ZAR, £35 GBP)
+- **USD Fallback Currency**: Automatically use USD prices when no specific currency price is set
 - **Currency Switcher**: Let customers choose their preferred display currency
+- **Geolocation Detection**: Automatic currency detection based on customer location
 - **Yoco Compatible**: Checkout always processes in ZAR for Yoco gateway compatibility
+- **Coupon Support**: Full multi-currency coupon support (fixed and percentage)
 - **WooCommerce Integration**: Full support for products, carts, and checkout
 - **Tutor LMS Integration**: Multi-currency course pricing
 - **Setup Wizard**: Easy 4-step onboarding process
@@ -23,10 +26,10 @@ SD MultiCurrency Pro enables you to sell WooCommerce products and Tutor LMS cour
 
 ## Requirements
 
-- WordPress 6.0 or higher
-- WooCommerce 7.0 or higher
+- WordPress 5.8 or higher
+- WooCommerce 5.0 or higher
 - Tutor LMS 2.0 or higher (optional)
-- PHP 7.4 or higher
+- PHP 7.4 or higher with cURL extension
 
 ## Installation
 
@@ -48,6 +51,13 @@ SD MultiCurrency Pro enables you to sell WooCommerce products and Tutor LMS cour
 1. Edit any WooCommerce product or Tutor LMS course
 2. Find the "Multi-Currency Pricing" meta box
 3. Enter prices for each enabled currency
+
+### Price Priority
+
+When displaying prices, the plugin follows this priority:
+1. **Currency-specific price** - If a price is set for the customer's currency, use it directly
+2. **USD fallback** - If no currency price but USD price exists, convert to target currency
+3. **ZAR conversion** - Convert the base ZAR price using current exchange rates
 
 ### Currency Switcher
 
@@ -71,6 +81,16 @@ When using Yoco payment gateway, the plugin automatically:
 2. Converts cart to ZAR at checkout
 3. Shows conversion notice to customer
 4. Processes payment in ZAR
+5. Stores original currency prices in order meta
+
+## Coupon Support
+
+The plugin fully supports WooCommerce coupons in multi-currency:
+
+- **Fixed Coupons**: Display converted amount in customer's currency
+- **Percentage Coupons**: Apply to prices correctly
+- **Cart/Checkout**: Discounts calculated and displayed correctly
+- **Order Emails**: Show discounts in customer's currency
 
 ## License Activation
 
@@ -78,9 +98,34 @@ When using Yoco payment gateway, the plugin automatically:
 2. Enter your license key from Soft Dynamix
 3. Click "Activate License"
 
+## Documentation
+
+| Document | Description |
+|----------|-------------|
+| [CHANGELOG.md](CHANGELOG.md) | Version history and release notes |
+| [DEVELOPER_DOCS.md](DEVELOPER_DOCS.md) | Technical documentation for developers |
+| [HANDOVER.md](HANDOVER.md) | Project handoff document |
+| [WORKLOG.md](WORKLOG.md) | Detailed development work log |
+
 ## Changelog
 
-### 1.0.0
+### 1.3.0 (May 7, 2025)
+- **Added**: Comprehensive coupon support for non-ZAR currencies
+- **Fixed**: Cart total calculation now accounts for discounts, shipping, fees, taxes
+- **Fixed**: Coupon display showing ZAR values instead of converted currency
+- **Improved**: Order emails and thank you page display discounts correctly
+
+### 1.2.0 (May 7, 2025)
+- **Added**: USD fallback currency support
+- **Added**: `convert_between_currencies()` method
+- **Fixed**: Geolocation fallback to USD instead of ZAR
+- **Fixed**: Yoco payment processing errors
+
+### 1.1.0 (May 6, 2025)
+- **Added**: Yoco payment gateway silent conversion
+- **Fixed**: Payment errors with non-ZAR currencies
+
+### 1.0.0 (May 6, 2025)
 - Initial release
 - Multi-currency support for WooCommerce
 - Tutor LMS integration
@@ -93,13 +138,19 @@ When using Yoco payment gateway, the plugin automatically:
 ## Frequently Asked Questions
 
 ### Does this work with any payment gateway?
-Yes! While optimized for Yoco (ZAR-only), it works with any gateway.
+Yes! While optimized for Yoco (ZAR-only), it works with any gateway. The currency conversion happens transparently.
 
 ### Can I use automatic exchange rates?
-This plugin uses fixed per-product pricing for precise control. If you need automatic rates, they can be added in a future update.
+Yes, the plugin fetches exchange rates from the Frankfurter API and updates them hourly. You can also set fixed per-product prices for precise control.
 
 ### Does it support variable products?
 Yes, multi-currency pricing works with both simple and variable WooCommerce products.
+
+### How do coupons work with different currencies?
+Fixed-amount coupons are displayed in the customer's currency (converted from ZAR). Percentage coupons work the same across all currencies.
+
+### What happens if a currency doesn't have a specific price set?
+The plugin falls back to USD price (converted), then to ZAR base price (converted) using current exchange rates.
 
 ## Support
 

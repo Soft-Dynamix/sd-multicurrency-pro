@@ -205,15 +205,33 @@ class SDMC_Currency {
         // Re-detect based on geolocation
         $detected_currency = self::DEFAULT_CURRENCY;
         $detected_country = null;
+        $active_currencies = self::get_active_currencies();
         
         if (class_exists('SDMC_Geolocation')) {
             $country = SDMC_Geolocation::get_country();
             if ($country) {
                 $detected_country = $country;
-                $currency = SDMC_Geolocation::get_currency_for_country($country);
-                if ($currency && self::is_valid_currency($currency)) {
-                    $detected_currency = $currency;
-                    self::set_currency($currency);
+                $mapped_currency = SDMC_Geolocation::get_currency_for_country($country);
+                
+                // Try the mapped currency first
+                if ($mapped_currency && in_array($mapped_currency, $active_currencies)) {
+                    $detected_currency = $mapped_currency;
+                    self::set_currency($mapped_currency);
+                }
+                // Fallback 1: Use USD if mapped currency is not active
+                elseif (in_array('USD', $active_currencies)) {
+                    $detected_currency = 'USD';
+                    self::set_currency('USD');
+                }
+                // Fallback 2: Use first non-ZAR active currency
+                else {
+                    foreach ($active_currencies as $active_currency) {
+                        if ($active_currency !== 'ZAR') {
+                            $detected_currency = $active_currency;
+                            self::set_currency($active_currency);
+                            break;
+                        }
+                    }
                 }
             }
         }
