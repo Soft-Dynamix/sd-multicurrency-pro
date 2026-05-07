@@ -3,6 +3,10 @@
  * Tutor LMS Integration Class
  * 
  * Handles Tutor LMS-specific hooks and filters
+ * 
+ * Price Priority:
+ * 1. Currency-specific price if set (e.g., _sd_price_usd = 35)
+ * 2. Convert from base ZAR price using exchange rate
  */
 
 if (!defined('ABSPATH')) {
@@ -88,9 +92,63 @@ class SDMC_Integrations_Tutor {
         add_action('tutor_course/single/content/after', [$this, 'end_price_buffer'], 999);
         add_action('tutor_before_course_archive_loop', [$this, 'start_price_buffer'], 1);
         add_action('tutor_after_course_archive_loop', [$this, 'end_price_buffer'], 999);
+    }
+    
+    /**
+     * Get converted price for a course
+     * 
+     * Priority:
+     * 1. Use currency-specific price if set (e.g., _sd_price_usd = 35)
+     * 2. Otherwise, convert from ZAR using exchange rate
+     * 
+     * @param int $course_id
+     * @param string $currency
+     * @return float|false
+     */
+    private function get_converted_price($course_id, $currency) {
+        if ($currency === $this->base_currency) {
+            // Return the base price from Tutor
+            $price = get_post_meta($course_id, '_tutor_regular_price', true);
+            if (empty($price)) {
+                $price = get_post_meta($course_id, '_tutor_course_price', true);
+            }
+            return $price ? (float)$price : false;
+        }
         
-        // Debug: Log price queries
-        // add_action('get_post_metadata', [$this, 'debug_price_meta'], 1, 4);
+        // First, check for currency-specific price
+        $currency_price = get_post_meta($course_id, '_sd_price_' . strtolower($currency), true);
+        
+        if (!empty($currency_price) && is_numeric($currency_price)) {
+            return (float)$currency_price;
+        }
+        
+        // Fallback: Convert from ZAR using exchange rate
+        if (!class_exists('SDMC_Exchange_Rates')) {
+            return false;
+        }
+        
+        // Get base ZAR price
+        $zar_price = get_post_meta($course_id, '_tutor_regular_price', true);
+        if (empty($zar_price)) {
+            $zar_price = get_post_meta($course_id, '_tutor_course_price', true);
+        }
+        
+        if (empty($zar_price) || !is_numeric($zar_price)) {
+            return false;
+        }
+        
+        // Get exchange rate and convert
+        $rate = SDMC_Exchange_Rates::get_rate($currency);
+        
+        if (!$rate || $rate <= 0) {
+            return false;
+        }
+        
+        // Rate format: 1 ZAR = X units of currency
+        // So: currency amount = ZAR price * rate
+        $converted_price = (float)$zar_price * $rate;
+        
+        return round($converted_price, 2);
     }
     
     /**
@@ -121,16 +179,12 @@ class SDMC_Integrations_Tutor {
             return $metadata;
         }
         
-        // Get our custom price for this currency
-        $custom_price = get_post_meta($object_id, '_sd_price_' . strtolower($currency), true);
+        // Get converted price (currency-specific or converted from ZAR)
+        $converted_price = $this->get_converted_price($object_id, $currency);
         
-        // Debug
-        error_log("SDMC Debug: Course $object_id, Currency: $currency, Custom Price: $custom_price");
-        
-        // Return the custom price if set
-        if (!empty($custom_price) && is_numeric($custom_price)) {
-            error_log("SDMC Debug: Returning custom price $custom_price for course $object_id");
-            return $custom_price;
+        // Return the converted price
+        if ($converted_price !== false) {
+            return $converted_price;
         }
         
         return $metadata;
@@ -165,18 +219,16 @@ class SDMC_Integrations_Tutor {
             return $price_html;
         }
         
-        // Get custom price
-        $custom_price = get_post_meta($course_id, '_sd_price_' . strtolower($currency), true);
+        // Get converted price (currency-specific or converted from ZAR)
+        $converted_price = $this->get_converted_price($course_id, $currency);
         
-        error_log("SDMC Debug: filter_tutor_price_output - Course $course_id, Currency: $currency, Price: $custom_price");
-        
-        if (empty($custom_price) || !is_numeric($custom_price)) {
+        if ($converted_price === false) {
             return $price_html;
         }
         
         $symbol = SDMC_Currency::get_symbol($currency);
         
-        return '<span class="sdmc-course-price">' . esc_html($symbol . number_format((float)$custom_price, 2)) . '</span>';
+        return '<span class="sdmc-course-price">' . esc_html($symbol . number_format($converted_price, 2)) . '</span>';
     }
     
     /**
@@ -219,15 +271,14 @@ class SDMC_Integrations_Tutor {
         $course_id = get_the_ID();
         
         if ($course_id) {
-            $custom_price = get_post_meta($course_id, '_sd_price_' . strtolower($currency), true);
+            // Get converted price (currency-specific or converted from ZAR)
+            $converted_price = $this->get_converted_price($course_id, $currency);
             
-            error_log("SDMC Debug: Buffer - Course $course_id, Currency: $currency, Custom Price: $custom_price");
-            
-            if (!empty($custom_price) && is_numeric($custom_price)) {
-                // Replace the price amount (e.g., R 800.00 → $ 50.00)
+            if ($converted_price !== false) {
+                // Replace the price amount (e.g., R 800.00 → $ 43.20)
                 $content = preg_replace(
                     '/' . preg_quote($base_symbol, '/') . '\s*[\d,]+\.?\d*/',
-                    $symbol . ' ' . number_format((float)$custom_price, 2),
+                    $symbol . ' ' . number_format($converted_price, 2),
                     $content
                 );
             }
@@ -256,11 +307,13 @@ class SDMC_Integrations_Tutor {
     public function render_course_meta_box($post) {
         wp_nonce_field('sdmc_course_pricing', 'sdmc_course_pricing_nonce');
         
-        $currencies = ['ZAR', 'USD', 'GBP', 'EUR'];
+        $settings = get_option('sdmc_settings', []);
+        $currencies = $settings['active_currencies'] ?? ['ZAR', 'USD', 'GBP', 'EUR'];
         $base_currency = $this->base_currency;
         
         echo '<div class="sdmc-course-pricing">';
         echo '<p class="description" style="margin-bottom: 15px;"><strong>Enter prices for each currency:</strong></p>';
+        echo '<p class="description" style="margin-bottom: 10px; color: #666; font-size: 12px;">Leave empty to auto-convert from ' . esc_html($base_currency) . ' using exchange rate.</p>';
         
         foreach ($currencies as $currency) {
             $symbol = SDMC_Currency::get_symbol($currency);
@@ -278,16 +331,29 @@ class SDMC_Integrations_Tutor {
             echo 'id="sdmc_course_price_' . esc_attr(strtolower($currency)) . '" ';
             echo 'name="sdmc_price_' . esc_attr(strtolower($currency)) . '" ';
             echo 'value="' . esc_attr($price) . '" ';
-            echo 'placeholder="0.00" ';
-            echo 'style="width: 100%; padding: 5px;">';
+            echo 'placeholder="' . ($is_base ? 'Set in Tutor pricing' : 'Auto-convert from ' . $base_currency) . '" ';
+            echo 'style="width: 100%; padding: 5px;" ';
+            echo ($is_base ? 'readonly style="background: #eee;"' : '') . '>';
             
-            // Debug: Show what's actually saved
-            echo '<small style="color: #666;">Saved value: ' . esc_html($price ?: '(empty)') . '</small>';
+            if (!$is_base && empty($price)) {
+                // Show what the auto-converted price would be
+                $zar_price = get_post_meta($post->ID, '_tutor_regular_price', true);
+                if (empty($zar_price)) {
+                    $zar_price = get_post_meta($post->ID, '_tutor_course_price', true);
+                }
+                if (!empty($zar_price) && class_exists('SDMC_Exchange_Rates')) {
+                    $rate = SDMC_Exchange_Rates::get_rate($currency);
+                    if ($rate > 0) {
+                        $auto_price = (float)$zar_price * $rate;
+                        echo '<small style="color: #666;">Auto: ~' . esc_html($symbol . number_format($auto_price, 2)) . '</small>';
+                    }
+                }
+            }
             echo '</div>';
         }
         
-        echo '<p class="description" style="margin-top: 10px; padding-top: 10px; border-top: 1px solid #ddd; color: #666;">';
-        echo '<strong>Important:</strong> Make sure to enter the price in that currency (not a conversion of the base price).';
+        echo '<p class="description" style="margin-top: 10px; padding-top: 10px; border-top: 1px solid #ddd; color: #666; font-size: 11px;">';
+        echo '<strong>Tip:</strong> Set custom prices for specific currencies, or leave empty to use automatic conversion from the exchange rate.';
         echo '</p>';
         
         echo '</div>';
@@ -300,7 +366,6 @@ class SDMC_Integrations_Tutor {
         // Verify nonce
         if (!isset($_POST['sdmc_course_pricing_nonce']) || 
             !wp_verify_nonce($_POST['sdmc_course_pricing_nonce'], 'sdmc_course_pricing')) {
-            error_log("SDMC Debug: Nonce verification failed");
             return;
         }
         
@@ -311,14 +376,18 @@ class SDMC_Integrations_Tutor {
         
         // Check permissions
         if (!current_user_can('edit_post', $post_id)) {
-            error_log("SDMC Debug: Permission check failed");
             return;
         }
         
         // Save prices
-        $currencies = ['ZAR', 'USD', 'GBP', 'EUR'];
+        $settings = get_option('sdmc_settings', []);
+        $currencies = $settings['active_currencies'] ?? ['ZAR', 'USD', 'GBP', 'EUR'];
         
         foreach ($currencies as $currency) {
+            if ($currency === $this->base_currency) {
+                continue; // Skip base currency
+            }
+            
             $key = 'sdmc_price_' . strtolower($currency);
             
             if (isset($_POST[$key])) {
@@ -328,19 +397,10 @@ class SDMC_Integrations_Tutor {
                 
                 if (!empty($price) && is_numeric($price)) {
                     update_post_meta($post_id, $meta_key, floatval($price));
-                    error_log("SDMC Debug: Saved $meta_key = $price for post $post_id");
                 } else {
                     delete_post_meta($post_id, $meta_key);
-                    error_log("SDMC Debug: Deleted $meta_key for post $post_id");
                 }
             }
-        }
-        
-        // Verify what was saved
-        error_log("SDMC Debug: After save - verifying prices for post $post_id");
-        foreach ($currencies as $currency) {
-            $saved = get_post_meta($post_id, '_sd_price_' . strtolower($currency), true);
-            error_log("SDMC Debug:   $currency = $saved");
         }
     }
 }
