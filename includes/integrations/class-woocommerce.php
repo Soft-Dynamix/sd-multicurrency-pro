@@ -96,6 +96,7 @@ class SDMC_Integrations_Woocommerce {
         // Cart item price display (for mini cart, cart page)
         add_filter('woocommerce_cart_item_price', [$this, 'filter_cart_item_price'], 99, 3);
         add_filter('woocommerce_cart_item_subtotal', [$this, 'filter_cart_item_subtotal'], 99, 3);
+        add_filter('woocommerce_cart_subtotal', [$this, 'filter_cart_subtotal'], 99, 3);
         add_filter('woocommerce_cart_total', [$this, 'filter_cart_total'], 99);
         
         // Checkout notice
@@ -249,6 +250,44 @@ class SDMC_Integrations_Woocommerce {
         
         $symbol = SDMC_Currency::get_symbol($display_currency);
         return $symbol . number_format($total, 2);
+    }
+    
+    /**
+     * Filter cart subtotal for display (in CART TOTALS section)
+     */
+    public function filter_cart_subtotal($subtotal, $compound, $cart) {
+        // Don't filter on checkout
+        if (function_exists('is_checkout') && is_checkout()) {
+            return $subtotal;
+        }
+        
+        if (!class_exists('SDMC_Currency')) {
+            return $subtotal;
+        }
+        
+        $display_currency = SDMC_Currency::get_currency();
+        
+        if ($display_currency === $this->base_currency) {
+            return $subtotal;
+        }
+        
+        // Calculate subtotal from cart items
+        $cart_subtotal = 0;
+        foreach ($cart->get_cart() as $cart_item) {
+            $product_id = $cart_item['product_id'];
+            $currency_price = get_post_meta($product_id, '_sd_price_' . strtolower($display_currency), true);
+            
+            if (!empty($currency_price) && is_numeric($currency_price)) {
+                $cart_subtotal += (float)$currency_price * $cart_item['quantity'];
+            }
+        }
+        
+        if ($cart_subtotal > 0) {
+            $symbol = SDMC_Currency::get_symbol($display_currency);
+            return $symbol . number_format($cart_subtotal, 2);
+        }
+        
+        return $subtotal;
     }
     
     /**
