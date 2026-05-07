@@ -99,6 +99,10 @@ class SDMC_Integrations_Woocommerce {
         add_filter('woocommerce_cart_subtotal', [$this, 'filter_cart_subtotal'], 99, 3);
         add_filter('woocommerce_cart_total', [$this, 'filter_cart_total'], 99);
         
+        // IMPORTANT: Convert cart prices for checkout payment
+        // This converts the displayed currency price back to ZAR for Yoco payment
+        add_action('woocommerce_before_calculate_totals', [$this, 'convert_cart_prices_to_zar'], 99);
+        
         // Checkout notice
         add_action('woocommerce_before_checkout_form', [$this, 'checkout_notice'], 5);
     }
@@ -291,6 +295,58 @@ class SDMC_Integrations_Woocommerce {
     }
     
     /**
+     * Convert cart prices to ZAR for checkout/payment
+     * 
+     * This is the KEY function for Yoco compatibility:
+     * - Customer sees prices in their selected currency (e.g., $35 USD)
+     * - At checkout, we convert that $35 back to ZAR using exchange rate
+     * - Yoco charges the converted ZAR amount
+     * 
+     * @param WC_Cart $cart
+     */
+    public function convert_cart_prices_to_zar($cart) {
+        if (is_admin() && !wp_doing_ajax()) {
+            return;
+        }
+        
+        if (!class_exists('SDMC_Currency') || !class_exists('SDMC_Exchange_Rates')) {
+            return;
+        }
+        
+        $display_currency = SDMC_Currency::get_currency();
+        
+        // No conversion needed if customer is using ZAR
+        if ($display_currency === $this->base_currency) {
+            return;
+        }
+        
+        // Get the exchange rate for conversion
+        $rate = SDMC_Exchange_Rates::get_rate($display_currency);
+        
+        if (!$rate || $rate <= 0) {
+            return;
+        }
+        
+        foreach ($cart->get_cart() as $cart_item) {
+            $product_id = $cart_item['product_id'];
+            
+            // Get the currency-specific price (e.g., $35 for USD)
+            $currency_price = get_post_meta($product_id, '_sd_price_' . strtolower($display_currency), true);
+            
+            if (!empty($currency_price) && is_numeric($currency_price)) {
+                // Convert the currency price back to ZAR
+                // Rate format: 1 ZAR = X units of currency
+                // So: ZAR amount = currency price / rate
+                $zar_price = (float) $currency_price / $rate;
+                
+                // Set the cart item price to the converted ZAR amount
+                $cart_item['data']->set_price($zar_price);
+            }
+            // If no currency-specific price is set, the original ZAR price is used
+        }
+    }
+    
+    /**
      * Filter cart total for display
      */
     public function filter_cart_total($total) {
@@ -353,6 +409,20 @@ class SDMC_Integrations_Woocommerce {
             $rate = SDMC_Exchange_Rates::get_rate($customer_currency);
             $order->update_meta_data('_sdmc_exchange_rate', $rate);
             $order->update_meta_data('_sdmc_rate_last_update', SDMC_Exchange_Rates::get_last_update());
+            
+            // Store the inverse rate for easier reference (1 USD = X ZAR)
+            $inverse_rate = SDMC_Exchange_Rates::get_inverse_rate($customer_currency);
+            $order->update_meta_data('_sdmc_inverse_rate', $inverse_rate);
+            
+            // Store the original currency prices for each item
+            foreach ($order->get_items() as $item_id => $item) {
+                $product_id = $item->get_product_id();
+                $currency_price = get_post_meta($product_id, '_sd_price_' . strtolower($customer_currency), true);
+                if (!empty($currency_price)) {
+                    $item->update_meta_data('_sdmc_original_currency', $customer_currency);
+                    $item->update_meta_data('_sdmc_original_price', $currency_price);
+                }
+            }
         }
     }
     
@@ -376,11 +446,48 @@ class SDMC_Integrations_Woocommerce {
             return;
         }
         
+        // Get exchange rate and show conversion info
+        $rate_info = '';
+        if (class_exists('SDMC_Exchange_Rates')) {
+            $inverse_rate = SDMC_Exchange_Rates::get_inverse_rate($customer_currency);
+            if ($inverse_rate) {
+                $rate_info = sprintf(
+                    ' (1 %s ≈ %s ZAR)',
+                    $customer_currency,
+                    number_format($inverse_rate, 2)
+                );
+            }
+        }
+        
+        // Calculate cart total in customer's currency
+        $cart_total_currency = 0;
+        if (function_exists('WC') && isset(WC()->cart)) {
+            foreach (WC()->cart->get_cart() as $cart_item) {
+                $product_id = $cart_item['product_id'];
+                $currency_price = get_post_meta($product_id, '_sd_price_' . strtolower($customer_currency), true);
+                if (!empty($currency_price) && is_numeric($currency_price)) {
+                    $cart_total_currency += (float)$currency_price * $cart_item['quantity'];
+                }
+            }
+        }
+        
+        $symbol = SDMC_Currency::get_symbol($customer_currency);
+        
         echo '<div class="woocommerce-info sdmc-checkout-currency-notice">';
-        echo sprintf(
-            esc_html__('You were viewing prices in %s. Payment will be processed in ZAR (South African Rand) via Yoco.', 'sd-multicurrency-pro'),
-            '<strong>' . esc_html($customer_currency) . '</strong>'
-        );
+        if ($cart_total_currency > 0) {
+            echo sprintf(
+                esc_html__('You were viewing prices in %s. Your cart total is %s%s. Payment will be processed in ZAR (South African Rand) via Yoco.%s', 'sd-multicurrency-pro'),
+                '<strong>' . esc_html($customer_currency) . '</strong>',
+                '<strong>' . $symbol . number_format($cart_total_currency, 2) . '</strong>',
+                esc_html($rate_info),
+                ''
+            );
+        } else {
+            echo sprintf(
+                esc_html__('You were viewing prices in %s. Payment will be processed in ZAR (South African Rand) via Yoco.', 'sd-multicurrency-pro'),
+                '<strong>' . esc_html($customer_currency) . '</strong>'
+            );
+        }
         echo '</div>';
     }
     
@@ -396,6 +503,7 @@ class SDMC_Integrations_Woocommerce {
         
         $zar_amount = $order->get_total();
         $original_rate = $order->get_meta('_sdmc_exchange_rate');
+        $inverse_rate = $order->get_meta('_sdmc_inverse_rate');
         $last_update = $order->get_meta('_sdmc_rate_last_update');
         
         ?>
@@ -405,16 +513,42 @@ class SDMC_Integrations_Woocommerce {
                 <strong><?php _e('Customer Currency:', 'sd-multicurrency-pro'); ?></strong> 
                 <?php echo esc_html($customer_currency); ?>
             </p>
+            <?php if ($inverse_rate) : ?>
             <p style="margin: 0 0 5px 0;">
                 <strong><?php _e('Exchange Rate:', 'sd-multicurrency-pro'); ?></strong> 
-                1 <?php echo esc_html($this->base_currency); ?> = <?php echo esc_html(number_format((float)$original_rate, 4)); ?> <?php echo esc_html($customer_currency); ?>
+                1 <?php echo esc_html($customer_currency); ?> = <?php echo esc_html(number_format((float)$inverse_rate, 2)); ?> <?php echo esc_html($this->base_currency); ?>
             </p>
+            <?php endif; ?>
             <p style="margin: 0 0 5px 0;">
                 <strong><?php _e('Amount Charged:', 'sd-multicurrency-pro'); ?></strong> 
                 R<?php echo esc_html(number_format((float)$zar_amount, 2)); ?> <?php echo esc_html($this->base_currency); ?>
             </p>
+            <?php 
+            // Show original prices for each item
+            $has_item_prices = false;
+            foreach ($order->get_items() as $item) {
+                $original_price = $item->get_meta('_sdmc_original_price');
+                if (!empty($original_price)) {
+                    $has_item_prices = true;
+                    break;
+                }
+            }
+            if ($has_item_prices) : ?>
+            <div style="margin-top: 10px; padding-top: 10px; border-top: 1px solid #ddd;">
+                <strong><?php _e('Original Prices:', 'sd-multicurrency-pro'); ?></strong>
+                <ul style="margin: 5px 0 0 0; padding-left: 20px;">
+                    <?php foreach ($order->get_items() as $item) :
+                        $original_price = $item->get_meta('_sdmc_original_price');
+                        if (!empty($original_price)) :
+                            $symbol = SDMC_Currency::get_symbol($customer_currency);
+                    ?>
+                    <li><?php echo esc_html($item->get_name()); ?>: <?php echo esc_html($symbol . number_format((float)$original_price, 2)); ?> <?php echo esc_html($customer_currency); ?></li>
+                    <?php endif; endforeach; ?>
+                </ul>
+            </div>
+            <?php endif; ?>
             <?php if ($last_update) : ?>
-            <p style="margin: 0; font-size: 11px; color: #666;">
+            <p style="margin: 10px 0 0 0; font-size: 11px; color: #666;">
                 <em><?php _e('Rate updated:', 'sd-multicurrency-pro'); ?> <?php echo esc_html($last_update); ?></em>
             </p>
             <?php endif; ?>
