@@ -72,6 +72,8 @@ class SDMC_Frontend_Switcher {
      * Render dropdown style
      */
     private function render_dropdown($current, $currencies) {
+        echo '<div class="sdmc-dropdown-wrapper" style="display: inline-flex; align-items: center; gap: 5px;">';
+        
         echo '<select class="sdmc-currency-select">';
         
         foreach ($currencies as $currency) {
@@ -83,6 +85,13 @@ class SDMC_Frontend_Switcher {
         }
         
         echo '</select>';
+        
+        // Reset button - detect based on geolocation
+        echo '<button type="button" class="sdmc-reset-btn" title="Auto-detect currency based on your location" style="background: transparent; border: 1px solid #ccc; border-radius: 4px; padding: 4px 8px; cursor: pointer; font-size: 12px;">';
+        echo '📍';
+        echo '</button>';
+        
+        echo '</div>';
     }
     
     /**

@@ -32,6 +32,58 @@
     box-shadow: 0 0 0 3px rgba(37, 99, 235, 0.1);
 }
 
+/* Dropdown Wrapper with Reset Button */
+.sdmc-dropdown-wrapper {
+    display: inline-flex;
+    align-items: center;
+    gap: 5px;
+}
+
+.sdmc-currency-select {
+    appearance: none;
+    -webkit-appearance: none;
+    background: #fff url('data:image/svg+xml;utf8,<svg xmlns="http://www.w3.org/2000/svg" width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="%236b7280" stroke-width="2"><polyline points="6,9 12,15 18,9"></polyline></svg>') no-repeat right 10px center;
+    border: 1px solid #e5e7eb;
+    padding: 8px 30px 8px 12px;
+    border-radius: 6px;
+    font-size: 14px;
+    cursor: pointer;
+    transition: all 0.2s;
+    min-width: 100px;
+}
+
+.sdmc-currency-select:hover {
+    border-color: #2563EB;
+}
+
+.sdmc-currency-select:focus {
+    outline: none;
+    border-color: #2563EB;
+    box-shadow: 0 0 0 3px rgba(37, 99, 235, 0.1);
+}
+
+/* Reset Button */
+.sdmc-reset-btn {
+    background: transparent;
+    border: 1px solid #e5e7eb;
+    border-radius: 6px;
+    padding: 6px 10px;
+    cursor: pointer;
+    font-size: 16px;
+    transition: all 0.2s;
+    line-height: 1;
+}
+
+.sdmc-reset-btn:hover {
+    background: #EFF6FF;
+    border-color: #2563EB;
+}
+
+.sdmc-reset-btn:disabled {
+    opacity: 0.5;
+    cursor: not-allowed;
+}
+
 /* Buttons Style */
 .sdmc-buttons {
     display: flex;

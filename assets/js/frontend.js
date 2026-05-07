@@ -53,6 +53,12 @@
             var currency = $(this).data('currency');
             setCurrency(currency);
         });
+        
+        // Reset button click - auto-detect based on geolocation
+        $(document).on('click', '.sdmc-reset-btn', function(e) {
+            e.preventDefault();
+            resetCurrency();
+        });
     }
     
     /**
@@ -94,6 +100,55 @@
             },
             complete: function() {
                 $('.sdmc-currency-btn, .sdmc-currency-flag').prop('disabled', false);
+                $('.sdmc-currency-select').prop('disabled', false);
+            }
+        });
+    }
+    
+    /**
+     * Reset currency and auto-detect based on geolocation
+     */
+    function resetCurrency() {
+        // Show loading state
+        $('.sdmc-currency-btn, .sdmc-currency-flag, .sdmc-reset-btn').prop('disabled', true);
+        $('.sdmc-currency-select').prop('disabled', true);
+        
+        // Show loading indicator on reset button
+        var $resetBtn = $('.sdmc-reset-btn');
+        $resetBtn.html('...');
+        
+        $.ajax({
+            url: sdmc_ajax.ajax_url,
+            type: 'POST',
+            data: {
+                action: 'sdmc_reset_currency',
+                nonce: sdmc_ajax.nonce
+            },
+            success: function(response) {
+                if (response.success) {
+                    // Show the detected currency message
+                    if (response.data.message) {
+                        console.log(response.data.message);
+                    }
+                    
+                    // Update UI
+                    updateSwitcherUI(response.data.currency);
+                    
+                    // Reload page to reflect new prices
+                    location.reload();
+                } else {
+                    console.error('Failed to reset currency:', response.data);
+                    alert('Failed to detect location. Please select currency manually.');
+                    $resetBtn.html('📍');
+                }
+            },
+            error: function(xhr, status, error) {
+                console.error('AJAX error:', error);
+                alert('Connection error. Please try again.');
+                $resetBtn.html('📍');
+            },
+            complete: function() {
+                $('.sdmc-currency-btn, .sdmc-currency-flag, .sdmc-reset-btn').prop('disabled', false);
                 $('.sdmc-currency-select').prop('disabled', false);
             }
         });
@@ -250,9 +305,15 @@
         setCurrency(currency);
     };
     
+    // Global function for reset
+    window.sdmcResetCurrency = function() {
+        resetCurrency();
+    };
+    
     // Expose to global
     window.SDMC_Frontend = {
         setCurrency: setCurrency,
+        resetCurrency: resetCurrency,
         formatPrice: formatPrice,
         updateSwitcherUI: updateSwitcherUI,
         loadAndApplyPrices: loadAndApplyPrices
