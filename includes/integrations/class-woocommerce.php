@@ -5,9 +5,11 @@
  * Handles WooCommerce-specific hooks and filters
  * Supports exchange rate conversion for Yoco payment gateway (ZAR only)
  * 
- * IMPORTANT: WooCommerce cart always uses ZAR internally.
- * Currency switching is only for DISPLAY purposes.
- * Yoco only accepts ZAR payments.
+ * IMPORTANT CONCEPT:
+ * - Customer SEES prices in their selected currency (e.g., $35 USD) throughout the ENTIRE site
+ * - Internally, cart prices are converted to ZAR for Yoco payment processing
+ * - Display filters override the ZAR prices to show the selected currency
+ * - Yoco receives and charges the correct ZAR amount
  */
 
 if (!defined('ABSPATH')) {
@@ -75,13 +77,13 @@ class SDMC_Integrations_Woocommerce {
      * Initialize hooks
      */
     private function init_hooks() {
-        // Change displayed currency symbol
+        // Change displayed currency symbol - show selected currency symbol everywhere
         add_filter('woocommerce_currency_symbol', [$this, 'set_currency_symbol'], 10, 2);
         
-        // Change displayed currency code
+        // Change displayed currency code - show selected currency code everywhere
         add_filter('woocommerce_currency', [$this, 'change_displayed_currency'], 99);
         
-        // Filter DISPLAYED price HTML (not the actual price)
+        // Filter DISPLAYED price HTML - show selected currency price
         add_filter('woocommerce_get_price_html', [$this, 'filter_price_html'], 99, 2);
         
         // Add order meta data for currency tracking
@@ -93,22 +95,27 @@ class SDMC_Integrations_Woocommerce {
         // Add conversion info to order emails
         add_action('woocommerce_email_after_order_table', [$this, 'email_conversion_info'], 10, 4);
         
-        // Cart item price display (for mini cart, cart page)
+        // Cart item price display - show selected currency price EVERYWHERE including checkout
         add_filter('woocommerce_cart_item_price', [$this, 'filter_cart_item_price'], 99, 3);
         add_filter('woocommerce_cart_item_subtotal', [$this, 'filter_cart_item_subtotal'], 99, 3);
         add_filter('woocommerce_cart_subtotal', [$this, 'filter_cart_subtotal'], 99, 3);
         add_filter('woocommerce_cart_total', [$this, 'filter_cart_total'], 99);
         
-        // IMPORTANT: Convert cart prices for checkout payment
-        // This converts the displayed currency price back to ZAR for Yoco payment
+        // Convert cart prices to ZAR for payment processing (Yoco needs ZAR)
+        // This happens BEFORE totals are calculated, so Yoco gets the correct ZAR amount
         add_action('woocommerce_before_calculate_totals', [$this, 'convert_cart_prices_to_zar'], 99);
         
-        // Checkout notice
+        // Checkout notice (optional)
         add_action('woocommerce_before_checkout_form', [$this, 'checkout_notice'], 5);
+        
+        // Filter order item display in emails and thank you page
+        add_filter('woocommerce_order_formatted_line_subtotal', [$this, 'filter_order_line_subtotal'], 99, 3);
+        add_filter('woocommerce_get_formatted_order_total', [$this, 'filter_order_total'], 99, 2);
     }
     
     /**
      * Set currency symbol for display
+     * Shows the selected currency symbol everywhere (including checkout)
      */
     public function set_currency_symbol($symbol, $currency) {
         if (is_admin() && !wp_doing_ajax()) {
@@ -122,15 +129,12 @@ class SDMC_Integrations_Woocommerce {
         $display_currency = SDMC_Currency::get_currency();
         
         // Return the symbol for the display currency
-        if ($currency === $display_currency) {
-            return SDMC_Currency::get_symbol($display_currency);
-        }
-        
-        return $symbol;
+        return SDMC_Currency::get_symbol($display_currency);
     }
     
     /**
      * Change displayed currency code
+     * Shows the selected currency code everywhere (including checkout)
      */
     public function change_displayed_currency($currency) {
         if (is_admin() && !wp_doing_ajax()) {
@@ -141,24 +145,17 @@ class SDMC_Integrations_Woocommerce {
             return $currency;
         }
         
-        // Check if we're on checkout - always show ZAR there for Yoco compatibility
-        if (function_exists('is_checkout') && is_checkout()) {
-            return $this->base_currency;
-        }
-        
+        // Show selected currency EVERYWHERE - including checkout
+        // The actual payment to Yoco uses ZAR internally
         return SDMC_Currency::get_currency();
     }
     
     /**
      * Filter price HTML for display
+     * Shows selected currency price on product pages, cart, checkout - everywhere
      */
     public function filter_price_html($price_html, $product) {
         if (is_admin() && !wp_doing_ajax()) {
-            return $price_html;
-        }
-        
-        // Don't filter on checkout - Yoco needs ZAR
-        if (function_exists('is_checkout') && is_checkout()) {
             return $price_html;
         }
         
@@ -195,12 +192,10 @@ class SDMC_Integrations_Woocommerce {
     
     /**
      * Filter cart item price for display
+     * Shows selected currency price - EVERYWHERE including checkout
      */
     public function filter_cart_item_price($price, $cart_item, $cart_item_key) {
-        // Don't filter on checkout
-        if (function_exists('is_checkout') && is_checkout()) {
-            return $price;
-        }
+        // NO checkout check - we want to show selected currency everywhere
         
         if (!class_exists('SDMC_Currency')) {
             return $price;
@@ -225,12 +220,10 @@ class SDMC_Integrations_Woocommerce {
     
     /**
      * Filter cart item subtotal for display
+     * Shows selected currency subtotal - EVERYWHERE including checkout
      */
     public function filter_cart_item_subtotal($subtotal, $cart_item, $cart_item_key) {
-        // Don't filter on checkout
-        if (function_exists('is_checkout') && is_checkout()) {
-            return $subtotal;
-        }
+        // NO checkout check - we want to show selected currency everywhere
         
         if (!class_exists('SDMC_Currency')) {
             return $subtotal;
@@ -258,12 +251,10 @@ class SDMC_Integrations_Woocommerce {
     
     /**
      * Filter cart subtotal for display (in CART TOTALS section)
+     * Shows selected currency subtotal - EVERYWHERE including checkout
      */
     public function filter_cart_subtotal($subtotal, $compound, $cart) {
-        // Don't filter on checkout
-        if (function_exists('is_checkout') && is_checkout()) {
-            return $subtotal;
-        }
+        // NO checkout check - we want to show selected currency everywhere
         
         if (!class_exists('SDMC_Currency')) {
             return $subtotal;
@@ -275,7 +266,7 @@ class SDMC_Integrations_Woocommerce {
             return $subtotal;
         }
         
-        // Calculate subtotal from cart items
+        // Calculate subtotal from cart items using currency-specific prices
         $cart_subtotal = 0;
         foreach ($cart->get_cart() as $cart_item) {
             $product_id = $cart_item['product_id'];
@@ -295,12 +286,51 @@ class SDMC_Integrations_Woocommerce {
     }
     
     /**
-     * Convert cart prices to ZAR for checkout/payment
+     * Filter cart total for display
+     * Shows selected currency total - EVERYWHERE including checkout
+     */
+    public function filter_cart_total($total) {
+        // NO checkout check - we want to show selected currency everywhere
+        
+        if (!class_exists('SDMC_Currency')) {
+            return $total;
+        }
+        
+        $display_currency = SDMC_Currency::get_currency();
+        
+        if ($display_currency === $this->base_currency) {
+            return $total;
+        }
+        
+        // Calculate total from cart items using currency-specific prices
+        $cart_total = 0;
+        if (function_exists('WC') && isset(WC()->cart)) {
+            foreach (WC()->cart->get_cart() as $cart_item) {
+                $product_id = $cart_item['product_id'];
+                $currency_price = get_post_meta($product_id, '_sd_price_' . strtolower($display_currency), true);
+                
+                if (!empty($currency_price) && is_numeric($currency_price)) {
+                    $cart_total += (float)$currency_price * $cart_item['quantity'];
+                }
+            }
+        }
+        
+        if ($cart_total > 0) {
+            $symbol = SDMC_Currency::get_symbol($display_currency);
+            return '<strong>' . $symbol . number_format($cart_total, 2) . '</strong>';
+        }
+        
+        return $total;
+    }
+    
+    /**
+     * Convert cart prices to ZAR for payment processing
      * 
-     * This is the KEY function for Yoco compatibility:
-     * - Customer sees prices in their selected currency (e.g., $35 USD)
-     * - At checkout, we convert that $35 back to ZAR using exchange rate
-     * - Yoco charges the converted ZAR amount
+     * THIS IS THE KEY FUNCTION:
+     * - Customer sees $35 USD throughout the site
+     * - This function converts $35 to ZAR (e.g., R648) for Yoco
+     * - Yoco charges R648 ZAR
+     * - Display filters still show $35 USD to customer
      * 
      * @param WC_Cart $cart
      */
@@ -340,6 +370,7 @@ class SDMC_Integrations_Woocommerce {
                 $zar_price = (float) $currency_price / $rate;
                 
                 // Set the cart item price to the converted ZAR amount
+                // This is what Yoco will receive
                 $cart_item['data']->set_price($zar_price);
             }
             // If no currency-specific price is set, the original ZAR price is used
@@ -347,11 +378,43 @@ class SDMC_Integrations_Woocommerce {
     }
     
     /**
-     * Filter cart total for display
+     * Filter order line subtotal for display on thank you page and emails
+     * Shows selected currency price
      */
-    public function filter_cart_total($total) {
-        // Don't filter on checkout
-        if (function_exists('is_checkout') && is_checkout()) {
+    public function filter_order_line_subtotal($subtotal, $item, $order) {
+        if (is_admin() && !wp_doing_ajax()) {
+            return $subtotal;
+        }
+        
+        if (!class_exists('SDMC_Currency')) {
+            return $subtotal;
+        }
+        
+        $customer_currency = $order->get_meta('_sdmc_customer_currency');
+        
+        if (empty($customer_currency) || $customer_currency === $this->base_currency) {
+            return $subtotal;
+        }
+        
+        $original_price = $item->get_meta('_sdmc_original_price');
+        
+        if (empty($original_price)) {
+            return $subtotal;
+        }
+        
+        $symbol = SDMC_Currency::get_symbol($customer_currency);
+        $quantity = $item->get_quantity();
+        $total = (float)$original_price * $quantity;
+        
+        return $symbol . number_format($total, 2);
+    }
+    
+    /**
+     * Filter order total for display on thank you page and emails
+     * Shows selected currency total
+     */
+    public function filter_order_total($total, $order) {
+        if (is_admin() && !wp_doing_ajax()) {
             return $total;
         }
         
@@ -359,28 +422,23 @@ class SDMC_Integrations_Woocommerce {
             return $total;
         }
         
-        $display_currency = SDMC_Currency::get_currency();
+        $customer_currency = $order->get_meta('_sdmc_customer_currency');
         
-        if ($display_currency === $this->base_currency) {
+        if (empty($customer_currency) || $customer_currency === $this->base_currency) {
             return $total;
         }
         
-        // Calculate total from cart items
-        $cart_total = 0;
-        if (function_exists('WC') && isset(WC()->cart)) {
-            foreach (WC()->cart->get_cart() as $cart_item) {
-                $product_id = $cart_item['product_id'];
-                $currency_price = get_post_meta($product_id, '_sd_price_' . strtolower($display_currency), true);
-                
-                if (!empty($currency_price) && is_numeric($currency_price)) {
-                    $cart_total += (float)$currency_price * $cart_item['quantity'];
-                }
+        $order_total_currency = 0;
+        foreach ($order->get_items() as $item) {
+            $original_price = $item->get_meta('_sdmc_original_price');
+            if (!empty($original_price)) {
+                $order_total_currency += (float)$original_price * $item->get_quantity();
             }
         }
         
-        if ($cart_total > 0) {
-            $symbol = SDMC_Currency::get_symbol($display_currency);
-            return '<strong>' . $symbol . number_format($cart_total, 2) . '</strong>';
+        if ($order_total_currency > 0) {
+            $symbol = SDMC_Currency::get_symbol($customer_currency);
+            return '<strong>' . $symbol . number_format($order_total_currency, 2) . '</strong>';
         }
         
         return $total;
@@ -428,6 +486,7 @@ class SDMC_Integrations_Woocommerce {
     
     /**
      * Display checkout notice
+     * Shows that payment will be in ZAR but keeps the selected currency visible
      */
     public function checkout_notice() {
         $settings = get_option('sdmc_settings', []);
@@ -476,15 +535,14 @@ class SDMC_Integrations_Woocommerce {
         echo '<div class="woocommerce-info sdmc-checkout-currency-notice">';
         if ($cart_total_currency > 0) {
             echo sprintf(
-                esc_html__('You were viewing prices in %s. Your cart total is %s%s. Payment will be processed in ZAR (South African Rand) via Yoco.%s', 'sd-multicurrency-pro'),
-                '<strong>' . esc_html($customer_currency) . '</strong>',
+                esc_html__('Your total is %s%s. Your card will be charged in ZAR (South African Rand) at the current exchange rate.%s', 'sd-multicurrency-pro'),
                 '<strong>' . $symbol . number_format($cart_total_currency, 2) . '</strong>',
                 esc_html($rate_info),
                 ''
             );
         } else {
             echo sprintf(
-                esc_html__('You were viewing prices in %s. Payment will be processed in ZAR (South African Rand) via Yoco.', 'sd-multicurrency-pro'),
+                esc_html__('Payment will be processed in ZAR (South African Rand) via Yoco.', 'sd-multicurrency-pro'),
                 '<strong>' . esc_html($customer_currency) . '</strong>'
             );
         }
@@ -567,18 +625,34 @@ class SDMC_Integrations_Woocommerce {
         }
         
         $zar_amount = $order->get_total();
+        $inverse_rate = $order->get_meta('_sdmc_inverse_rate');
+        
+        // Calculate total in customer's currency
+        $total_currency = 0;
+        foreach ($order->get_items() as $item) {
+            $original_price = $item->get_meta('_sdmc_original_price');
+            if (!empty($original_price)) {
+                $total_currency += (float)$original_price * $item->get_quantity();
+            }
+        }
+        
+        $symbol = SDMC_Currency::get_symbol($customer_currency);
         
         if ($plain_text) {
             echo "\n" . __('--- Currency Conversion ---', 'sd-multicurrency-pro') . "\n";
-            echo sprintf(__('You viewed prices in: %s', 'sd-multicurrency-pro'), $customer_currency) . "\n";
+            echo sprintf(__('You paid: %s %s', 'sd-multicurrency-pro'), $symbol . number_format($total_currency, 2), $customer_currency) . "\n";
+            if ($inverse_rate) {
+                echo sprintf(__('Exchange rate: 1 %s = %s ZAR', 'sd-multicurrency-pro'), $customer_currency, number_format((float)$inverse_rate, 2)) . "\n";
+            }
             echo sprintf(__('Amount charged: R%s ZAR', 'sd-multicurrency-pro'), number_format((float)$zar_amount, 2)) . "\n";
             echo "\n";
         } else {
             echo '<div style="margin: 20px 0; padding: 15px; background: #f6f7f7; border-radius: 4px;">';
             echo '<p style="margin: 0;">';
             echo sprintf(
-                __('You viewed prices in %s. Your card was charged in ZAR (South African Rand).', 'sd-multicurrency-pro'),
-                '<strong>' . esc_html($customer_currency) . '</strong>'
+                __('You paid %s %s. Your card was charged in ZAR (South African Rand).', 'sd-multicurrency-pro'),
+                '<strong>' . $symbol . number_format($total_currency, 2) . '</strong>',
+                esc_html($customer_currency)
             );
             echo '</p>';
             echo '</div>';
